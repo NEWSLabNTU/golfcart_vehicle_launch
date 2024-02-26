@@ -8,8 +8,24 @@
     <visual>
       <origin xyz="${vehicle_info['/**']['ros__parameters']['wheel_base']/2.0} 0 0" rpy="${pi/2.0} 0 ${pi}"/>
       <geometry>
-        <mesh filename="package://sample_vehicle_description/mesh/lexus.dae" scale="1 1 1"/>
+        <box size="0 0 0"/>
       </geometry>
     </visual>
   </link>
+  
+  <link name="car_link">
+		<visual>
+		    <origin xyz="0 0 0" rpy="0 0 0"/>
+			<geometry>
+				<box size="0.403 0.306 0.262"/>
+			</geometry>
+		</visual>	
+	</link>
+
+  <joint name="car_joint" type="fixed">
+    	<parent link="base_link"/>
+    	<child link="car_link"/>
+    	<origin xyz="1.5825 0 1.3155" rpy="0 0 0"/>
+	</joint>
+    
 </robot>
