@@ -17,7 +17,7 @@
 		<visual>
 		    <origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
-				<box size="0.403 0.306 0.262"/>
+				<box size="0.421 0.306 0.262"/>
 			</geometry>
 		</visual>	
 	</link>
@@ -25,7 +25,7 @@
   <joint name="car_joint" type="fixed">
     	<parent link="base_link"/>
     	<child link="car_link"/>
-    	<origin xyz="1.5825 0 1.3155" rpy="0 0 0"/>
+    	<origin xyz="0.1593 0 0.131" rpy="0 0 0"/>
 	</joint>
     
 </robot>
