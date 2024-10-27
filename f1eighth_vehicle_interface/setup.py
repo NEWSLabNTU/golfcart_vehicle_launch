@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'f1eighth_esc_control'
+package_name = 'f1eighth_vehicle_interface'
 
 setup(
     name=package_name,
@@ -15,13 +15,13 @@ setup(
     zip_safe=True,
     maintainer='habby',
     maintainer_email='a0979580915@gmail.com',
-    description='esc_control of autoware_manual_control',
+    description='Vehicle interface for F1EIGHTH',
     license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'actuator = f1eighth_esc_control.actuator:main',
-            'velocity_report = f1eighth_esc_control.velocity_report:main',
+            'actuator = f1eighth_vehicle_interface.actuator:main',
+            'velocity_report = f1eighth_vehicle_interface.velocity_report:main',
         ],
     },
 )
