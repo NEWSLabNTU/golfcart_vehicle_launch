@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    # Motor controller parameters
+    i2c_address: 64
+    i2c_busnum: 7
+    pwm_freq: 60
+    
+    # PID controller parameters
+    kp: 10
+    ki: 0
+    kd: 0
+
+    ## PWM parameters
+    # The minimum PWM value when the vehicle drives backward at the max speed.
+    min_pwm: 260
+    # The initial PWM value when the vehicle stop.
+    init_pwm: 380
+    # The maximum PWM value when the vehicle drives forward at the max speed.
+    max_pwm: 500
+
+    ## Steering parameters
+    # The initial value for the steering servo that the vehicle go straight forward.
+    init_steer: 500
+    # The minimum control value for steering servo making the leftmost turn.
+    min_steer: 380
+    # The maximum control value for steering servo making the rightmost turn.
+    max_steer: 620
+    # The ratio between the tire angle and the steer value
+    tire_angle_to_steer_ratio: 1.0
+    
+    # The publication rate of control commands
+    rate: 100
