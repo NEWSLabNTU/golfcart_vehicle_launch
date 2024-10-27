@@ -8,6 +8,7 @@ from simple_pid import PID
 
 import rclpy
 from rclpy.node import Node
+from rclpy import Parameter
 from geometry_msgs.msg import TwistStamped
 from autoware_auto_control_msgs.msg import AckermannControlCommand
 
@@ -17,20 +18,20 @@ class F1eighthActuator(Node):
         super().__init__("f1eighth_actuator_node")
 
         # Register the publication rate parameter
-        self.declare_parameter("i2c_address")
-        self.declare_parameter("i2c_busnum")
-        self.declare_parameter("pwm_freq")
-        self.declare_parameter("min_pwm")
-        self.declare_parameter("init_pwm")
-        self.declare_parameter("max_pwm")
-        self.declare_parameter("min_steer")
-        self.declare_parameter("init_steer")
-        self.declare_parameter("max_steer")
-        self.declare_parameter("tire_angle_to_steer_ratio")
-        self.declare_parameter("rate")
-        self.declare_parameter("kp")
-        self.declare_parameter("ki")
-        self.declare_parameter("kd")
+        self.declare_parameter("i2c_address", Parameter.Type.INTEGER)
+        self.declare_parameter("i2c_busnum", Parameter.Type.INTEGER)
+        self.declare_parameter("pwm_freq", Parameter.Type.INTEGER)
+        self.declare_parameter("min_pwm", Parameter.Type.INTEGER)
+        self.declare_parameter("init_pwm", Parameter.Type.INTEGER)
+        self.declare_parameter("max_pwm", Parameter.Type.INTEGER)
+        self.declare_parameter("min_steer", Parameter.Type.INTEGER)
+        self.declare_parameter("init_steer", Parameter.Type.INTEGER)
+        self.declare_parameter("max_steer", Parameter.Type.INTEGER)
+        self.declare_parameter("tire_angle_to_steer_ratio", Parameter.Type.DOUBLE)
+        self.declare_parameter("rate", Parameter.Type.DOUBLE)
+        self.declare_parameter("kp", Parameter.Type.DOUBLE)
+        self.declare_parameter("ki", Parameter.Type.DOUBLE)
+        self.declare_parameter("kd", Parameter.Type.DOUBLE)
 
         config = Config(
             init_pwm=self.get_parameter("init_pwm").get_parameter_value().integer_value,
@@ -132,7 +133,7 @@ class F1eighthActuator(Node):
         # - Use self.state.target_speed and self.state.current_speed to compute the error.
         # - Compute the PID controller output that will be added to init_pwm
         # - You are encouraged to add extra rules to improve the control.
-        pid_value = None
+        pid_value = 0.0
 
         pwm_value = self.config.init_pwm + pid_value
         return pwm_value
@@ -168,7 +169,7 @@ class Config:
 
 
 def main():
-    rclpy.init(sys.argv)
+    rclpy.init(args=sys.argv)
     node = F1eighthActuator()
     try:
         rclpy.spin(node)

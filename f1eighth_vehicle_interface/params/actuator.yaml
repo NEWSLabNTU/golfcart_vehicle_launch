@@ -6,9 +6,9 @@
     pwm_freq: 60
     
     # PID controller parameters
-    kp: 10
-    ki: 0
-    kd: 0
+    kp: 10.0
+    ki: 0.0
+    kd: 0.0
 
     ## PWM parameters
     # The minimum PWM value when the vehicle drives backward at the max speed.
@@ -29,4 +29,4 @@
     tire_angle_to_steer_ratio: 1.0
     
     # The publication rate of control commands
-    rate: 100
+    rate: 100.0
