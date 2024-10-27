@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch> 
   <arg name="vehicle_id" default="$(env VEHICLE_ID default)"/>
-  <node pkg="f1eighth_esc_control" exec="f1eighth_esc_control" name="f1eighth_esc_control_node" output="screen"/>
+  <node pkg="f1eighth_vehicle_interface" exec="actuator" name="actuator_node" output="screen" />
+  <node pkg="f1eighth_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen" />
 </launch>
