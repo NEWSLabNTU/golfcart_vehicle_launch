@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'f1eighth_esc_control = f1eighth_esc_control.f1eighth_esc_control:main',
+            'velocity_report = f1eighth_esc_control.velocity_report:main',
         ],
     },
 )
