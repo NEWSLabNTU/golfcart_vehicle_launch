@@ -1,12 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<launch> 
+<launch>
   <arg name="vehicle_id" default="$(env VEHICLE_ID default)"/>
-  
-  <node pkg="f1eighth_vehicle_interface" exec="actuator" name="actuator_node" output="screen">
-    <param from="$(find-pkg-share f1eighth_vehicle_interface)/params/actuator.yaml"/>
-  </node>
-  
-  <node pkg="f1eighth_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
-    <param from="$(find-pkg-share f1eighth_vehicle_interface)/params/velocity_report.yaml"/>
-  </node>
+
+  <group>
+    <push-ros-namespace namespace="f1eighth"/>
+
+    <node pkg="f1eighth_vehicle_interface" exec="actuator" name="actuator_node" output="screen">
+      <param from="$(find-pkg-share f1eighth_vehicle_interface)/params/actuator.yaml"/>
+    </node>
+
+    <node pkg="f1eighth_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
+      <param from="$(find-pkg-share f1eighth_vehicle_interface)/params/velocity_report.yaml"/>
+    </node>
+  </group>
 </launch>
