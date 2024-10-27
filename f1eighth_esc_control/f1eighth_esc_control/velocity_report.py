@@ -1,7 +1,8 @@
 import math
 import sys
-from functools import partial
+
 import Jetson.GPIO as GPIO
+
 import rclpy
 from rclyp.node import Node
 from autoware_auto_vehicle_msgs.msg import VelocityReport
@@ -29,17 +30,16 @@ class F1eighthVelocityReportNode(Node):
         )
 
         # Setup the pin
-        pin = self.get_parameter("pin").value
-        rate = self.get_parameter("rate").value
+        pin = self.get_parameter("pin").get_parameter_value().integer_value
         GPIO.setmode(GPIO.BOARD)
         GPIO.setup(pin, GPIO.IN)
-        GPIO.add_event_detect(
-            pin, GPIO.RISING, callback=partial(self.on_gpio_rising, self)
-        )
+        GPIO.add_event_detect(pin, GPIO.RISING, callback=self.on_gpio_rising)
 
-        # Periodic call
+        # Start a periodic call
+        rate = self.get_parameter("rate").get_parameter_value().double_value
         timer = self.create_timer(1.0 / rate, self.publish_callback)
 
+        # Save variables
         self.wheel_circumference_meters = (
             self.get_parameter("wheel_diameter").value / 100.0 * math.pi
         )
@@ -73,6 +73,7 @@ class F1eighthVelocityReportNode(Node):
         self.publisher.publish(msg)
 
     def on_gpio_rising(self) -> None:
+        # Increase the magnet marker count
         self.count += 1
 
 
