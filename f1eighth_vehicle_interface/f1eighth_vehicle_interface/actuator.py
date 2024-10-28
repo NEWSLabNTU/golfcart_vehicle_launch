@@ -133,7 +133,7 @@ class F1eighthActuator(Node):
         # - Use self.state.target_speed and self.state.current_speed to compute the error.
         # - Compute the PID controller output that will be added to init_pwm
         # - You are encouraged to add extra rules to improve the control.
-        pid_value = 0.0
+        pid_value = 0
 
         pwm_value = self.config.init_pwm + pid_value
         return pwm_value
@@ -143,7 +143,7 @@ class F1eighthActuator(Node):
         # - Use self.state.target_tire_angle and self.state.current_tire_angle to compute the error.
         # - Use self.config.tire_angle_to_steer_ratio to convert the tire angle and steer value on the servo.
         # - You are encouraged to add extra rules to improve the control.
-        pass
+        return 0
 
 
 @dataclass
