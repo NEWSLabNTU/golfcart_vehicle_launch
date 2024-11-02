@@ -43,7 +43,11 @@ class F1eighthVelocityReportNode(Node):
 
         # Save variables
         self.wheel_circumference_meters = wheel_circumference_meters
-        self.markers_per_rotation = self.get_parameter("markers_per_rotation").value
+        self.markers_per_rotation = (
+            self.get_parameter("markers_per_rotation")
+            .get_parameter_value()
+            .integer_value
+        )
         self.frame_id = (
             self.get_parameter("frame_id").get_parameter_value().string_value
         )
@@ -57,7 +61,7 @@ class F1eighthVelocityReportNode(Node):
     def publish_callback(self) -> None:
         # Compute the elapsed time since the last measurement
         curr_time = self.clock.now()
-        elapsed_secs = (curr_time - self.prev_time).nanoseconds / (10 ** 9)
+        elapsed_secs = (curr_time - self.prev_time).nanoseconds / (10**9)
 
         # Compute the speed
         markers_pers_sec = self.count / elapsed_secs
@@ -77,7 +81,7 @@ class F1eighthVelocityReportNode(Node):
         msg.heading_rate = 0.0
         self.publisher.publish(msg)
 
-    def on_gpio_rising(self) -> None:
+    def on_gpio_rising(self, channel) -> None:
         # Increase the magnet marker count
         self.count += 1
 
