@@ -9,7 +9,7 @@ from simple_pid import PID
 import rclpy
 from rclpy.node import Node
 from rclpy import Parameter
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TwistWithCovarianceStamped
 from autoware_auto_control_msgs.msg import AckermannControlCommand
 
 
@@ -88,14 +88,17 @@ class F1eighthActuator(Node):
         # Subscribe to control commands
         control_cmd_subscription = self.create_subscription(
             AckermannControlCommand,
-            "/control/command/control_cmd",
+            "~/input/control_cmd",
             self.control_callback,
             1,
         )
 
         # Subscribe to IMU data
         imu_subscription = self.create_subscription(
-            TwistStamped, "/filter/twist", self.imu_callback, 1
+            TwistWithCovarianceStamped,
+            "~/input/twist_with_covariance",
+            self.imu_callback,
+            1,
         )
 
         # Start periodic calls
@@ -113,7 +116,10 @@ class F1eighthActuator(Node):
         self.timer = timer
 
     def imu_callback(self, msg):
-        self.state.current_speed = msg.twist.linear.x
+        speed = msg.twist.twist.linear.x
+        angular_speed = msg.twist.twist.angular.z
+
+        self.state.current_speed = speed
 
     def control_callback(self, msg):
         self.state.target_speed = msg.longitudinal.speed
@@ -133,6 +139,8 @@ class F1eighthActuator(Node):
         # - Use self.state.target_speed and self.state.current_speed to compute the error.
         # - Compute the PID controller output that will be added to init_pwm
         # - You are encouraged to add extra rules to improve the control.
+
+        # TODO: Caculate the PID value
         pid_value = 0
 
         pwm_value = self.config.init_pwm + pid_value
@@ -143,7 +151,11 @@ class F1eighthActuator(Node):
         # - Use self.state.target_tire_angle and self.state.current_tire_angle to compute the error.
         # - Use self.config.tire_angle_to_steer_ratio to convert the tire angle and steer value on the servo.
         # - You are encouraged to add extra rules to improve the control.
-        return 0
+
+        # TODO: Caculate the PID value
+        steer_value = 0
+
+        return steer_value
 
 
 @dataclass
@@ -153,6 +165,9 @@ class State:
 
     target_tire_angle: Optional[float]
     current_tire_angle: Optional[float]
+
+    # TODO
+    # - Add additional state variables needed for your control algorithm
 
 
 @dataclass
