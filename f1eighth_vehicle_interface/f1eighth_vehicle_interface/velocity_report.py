@@ -18,6 +18,7 @@ class F1eighthVelocityReportNode(Node):
         self.declare_parameter("rate", Parameter.Type.DOUBLE)
         self.declare_parameter("wheel_diameter", Parameter.Type.DOUBLE)
         self.declare_parameter("markers_per_rotation", Parameter.Type.INTEGER)
+        self.declare_parameter("frame_id", Parameter.Type.STRING)
 
         # Create the publisher
         publisher = self.create_publisher(VelocityReport, "velocity_status", 1)
@@ -43,6 +44,9 @@ class F1eighthVelocityReportNode(Node):
         # Save variables
         self.wheel_circumference_meters = wheel_circumference_meters
         self.markers_per_rotation = self.get_parameter("markers_per_rotation").value
+        self.frame_id = (
+            self.get_parameter("frame_id").get_parameter_value().string_value
+        )
         self.pin = pin
         self.publisher = publisher
         self.timer = timer
@@ -67,6 +71,7 @@ class F1eighthVelocityReportNode(Node):
         # Publish the speed
         msg = VelocityReport()
         msg.header.stamp = curr_time.to_msg()
+        msg.header.frame_id = self.frame_id
         msg.longitudinal_velocity = speed
         msg.lateral_velocity = 0.0
         msg.heading_rate = 0.0
