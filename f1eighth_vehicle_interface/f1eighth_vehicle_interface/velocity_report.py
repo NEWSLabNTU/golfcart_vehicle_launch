@@ -21,7 +21,7 @@ class F1eighthVelocityReportNode(Node):
         self.declare_parameter("frame_id", Parameter.Type.STRING)
 
         # Create the publisher
-        publisher = self.create_publisher(VelocityReport, "velocity_status", 1)
+        publisher = self.create_publisher(VelocityReport, "~/input/velocity_status", 1)
 
         # Setup the pin
         pin = self.get_parameter("pin").get_parameter_value().integer_value

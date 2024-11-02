@@ -13,7 +13,7 @@
 
     <node pkg="f1eighth_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
       <param from="$(find-pkg-share f1eighth_vehicle_interface)/params/velocity_report.yaml"/>
-      <remap from="/f1eighth/velocity_status" to="/vehicle/status/velocity_status"/>
+      <remap from="~/input/velocity_status" to="/vehicle/status/velocity_status"/>
     </node>
   </group>
 </launch>
