@@ -1,13 +1,13 @@
 /**:
   ros__parameters:
     # The input GPIO pin number.
-    pin: 13
+    pin: 15
     
     # The wheel diameter in centimeters.
-    wheel_diameter: 13.0
+    wheel_diameter: 10.5
     
     # The number of markers on the wheel.
-    markers_per_rotation: 13
+    markers_per_rotation: 12
     
     # The publication rate of velocity report messages
     rate: 100.0
