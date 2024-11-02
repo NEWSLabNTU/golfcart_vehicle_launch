@@ -29,4 +29,4 @@
     tire_angle_to_steer_ratio: 1.0
     
     # The publication rate of control commands
-    rate: 100.0
+    rate: 20.0
