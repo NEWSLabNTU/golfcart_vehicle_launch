@@ -26,7 +26,7 @@
     # The maximum control value for steering servo making the rightmost turn.
     max_steer: 620
     # The ratio between the tire angle and the steer value
-    tire_angle_to_steer_ratio: 1.0
+    tire_angle_to_steer_ratio: 5.0
     
     # The publication rate of control commands
     rate: 20.0
