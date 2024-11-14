@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import math
 from typing import Optional
 from dataclasses import dataclass
 
@@ -9,8 +10,10 @@ from simple_pid import PID
 import rclpy
 from rclpy.node import Node
 from rclpy import Parameter
+from sensor_msgs.msg import Imu
 from geometry_msgs.msg import TwistWithCovarianceStamped
 from autoware_auto_control_msgs.msg import AckermannControlCommand
+from autoware_auto_vehicle_msgs.msg import VelocityReport
 
 
 class F1eighthActuator(Node):
@@ -95,9 +98,17 @@ class F1eighthActuator(Node):
 
         # Subscribe to IMU data
         imu_subscription = self.create_subscription(
-            TwistWithCovarianceStamped,
-            "~/input/twist_with_covariance",
+            Imu,
+            "/mpu9250/imu_raw",
             self.imu_callback,
+            1,
+        )
+
+        # Subscribe to speed data
+        speed_subscription = self.create_subscription(
+            VelocityReport,
+            "/vehicle/status/velocity_status",
+            self.velocity_callback,
             1,
         )
 
@@ -114,11 +125,15 @@ class F1eighthActuator(Node):
         self.imu_subscription = imu_subscription
         self.driver = driver
         self.timer = timer
+ 
 
     def imu_callback(self, msg):
-        speed = msg.twist.twist.linear.x
-        angular_speed = msg.twist.twist.angular.z
+        
+        angular_speed = msg.angular_velocity.z
 
+        
+    def velocity_callback(self, msg):
+        speed = msg.longitudinal_velocity
         self.state.current_speed = speed
 
     def control_callback(self, msg):
@@ -155,9 +170,11 @@ class F1eighthActuator(Node):
         # TODO: Caculate the PID value
         steer_value = 0
 
+
         return steer_value
+    
 
-
+    
 @dataclass
 class State:
     target_speed: Optional[float]
@@ -199,3 +216,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
