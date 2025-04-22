@@ -5,10 +5,17 @@
     i2c_busnum: 7
     pwm_freq: 60
     
+    # 直線
     # PID controller parameters
-    kp: 10.0
-    ki: 0.0
-    kd: 0.0
+    kp_speed: 2.5
+    ki_speed: 1.5
+    kd_speed: 0.05
+
+    # 轉彎
+    # PID controller parameters
+    kp_steer: 2.5
+    ki_steer: 1.5
+    kd_steer: 0.05
 
     ## PWM parameters
     # The minimum PWM value when the vehicle drives backward at the max speed.
@@ -26,7 +33,7 @@
     # The maximum control value for steering servo making the rightmost turn.
     max_steer: 620
     # The ratio between the tire angle and the steer value
-    tire_angle_to_steer_ratio: 5.0
+    tire_angle_to_steer_ratio: 1.0
     
     # The publication rate of control commands
-    rate: 20.0
+    rate: 100.0

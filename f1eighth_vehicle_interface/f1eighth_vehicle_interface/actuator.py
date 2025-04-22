@@ -12,8 +12,8 @@ from rclpy.node import Node
 from rclpy import Parameter
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import TwistWithCovarianceStamped
-from autoware_auto_control_msgs.msg import AckermannControlCommand
-from autoware_auto_vehicle_msgs.msg import VelocityReport
+from autoware_control_msgs.msg import Control
+from autoware_vehicle_msgs.msg import VelocityReport
 
 
 class F1eighthActuator(Node):
@@ -32,9 +32,12 @@ class F1eighthActuator(Node):
         self.declare_parameter("max_steer", Parameter.Type.INTEGER)
         self.declare_parameter("tire_angle_to_steer_ratio", Parameter.Type.DOUBLE)
         self.declare_parameter("rate", Parameter.Type.DOUBLE)
-        self.declare_parameter("kp", Parameter.Type.DOUBLE)
-        self.declare_parameter("ki", Parameter.Type.DOUBLE)
-        self.declare_parameter("kd", Parameter.Type.DOUBLE)
+        self.declare_parameter("kp_speed", Parameter.Type.DOUBLE)
+        self.declare_parameter("ki_speed", Parameter.Type.DOUBLE)
+        self.declare_parameter("kd_speed", Parameter.Type.DOUBLE)
+        self.declare_parameter("kp_steer", Parameter.Type.DOUBLE)
+        self.declare_parameter("ki_steer", Parameter.Type.DOUBLE)
+        self.declare_parameter("kd_steer", Parameter.Type.DOUBLE)
 
         config = Config(
             init_pwm=self.get_parameter("init_pwm").get_parameter_value().integer_value,
@@ -55,17 +58,30 @@ class F1eighthActuator(Node):
         )
 
         # PID controller parameters
-        kp = self.get_parameter("kp").get_parameter_value().double_value
-        ki = self.get_parameter("ki").get_parameter_value().double_value
-        kd = self.get_parameter("kd").get_parameter_value().double_value
+        kp_speed = self.get_parameter("kp_speed").get_parameter_value().double_value
+        ki_speed = self.get_parameter("ki_speed").get_parameter_value().double_value
+        kd_speed = self.get_parameter("kd_speed").get_parameter_value().double_value
+
+        kp_steer = self.get_parameter("kp_steer").get_parameter_value().double_value
+        ki_steer = self.get_parameter("ki_steer").get_parameter_value().double_value
+        kd_steer = self.get_parameter("kd_steer").get_parameter_value().double_value
 
         # Initialize the PID controller
         min_pid_output = config.min_pwm - config.init_pwm
         max_pid_output = config.max_pwm - config.init_pwm
         self.speed_pid = PID(
-            Kp=kp,
-            Ki=ki,
-            Kd=kd,
+            Kp=kp_speed,
+            Ki=ki_speed,
+            Kd=kd_speed,
+            output_limits=(min_pid_output, max_pid_output),
+        )
+
+        min_pid_output = config.min_steer - config.init_steer
+        max_pid_output = config.max_steer - config.init_steer
+        self.steer_pid = PID(
+            Kp=kp_steer,
+            Ki=ki_steer,
+            Kd=kd_steer,
             output_limits=(min_pid_output, max_pid_output),
         )
 
@@ -75,6 +91,7 @@ class F1eighthActuator(Node):
             current_speed=None,
             target_tire_angle=None,
             current_tire_angle=None,
+            angular_speed=None,
         )
 
         # Initialize the PCA9685 driver
@@ -90,7 +107,7 @@ class F1eighthActuator(Node):
 
         # Subscribe to control commands
         control_cmd_subscription = self.create_subscription(
-            AckermannControlCommand,
+            Control,
             "~/input/control_cmd",
             self.control_callback,
             1,
@@ -125,19 +142,17 @@ class F1eighthActuator(Node):
         self.imu_subscription = imu_subscription
         self.driver = driver
         self.timer = timer
- 
 
     def imu_callback(self, msg):
-        
         angular_speed = msg.angular_velocity.z
+        self.state.angular_speed = angular_speed
 
-        
     def velocity_callback(self, msg):
         speed = msg.longitudinal_velocity
         self.state.current_speed = speed
 
     def control_callback(self, msg):
-        self.state.target_speed = msg.longitudinal.speed
+        self.state.target_speed = msg.longitudinal.velocity
         self.state.target_tire_angle = msg.lateral.steering_tire_angle
 
     def timer_callback(self):
@@ -149,6 +164,7 @@ class F1eighthActuator(Node):
         steer_value = self.compute_steer_value()
         self.driver.set_pwm(1, 0, steer_value)
 
+        
     def compute_pwm_value(self) -> int:
         # TODO
         # - Use self.state.target_speed and self.state.current_speed to compute the error.
@@ -157,8 +173,21 @@ class F1eighthActuator(Node):
 
         # TODO: Caculate the PID value
         pid_value = 0
+        if self.state.target_speed is None or self.state.target_speed == 0 or self.state.current_speed is None:
+            return self.config.init_pwm
 
-        pwm_value = self.config.init_pwm + pid_value
+        # 計算速度誤差
+        error = self.state.current_speed - self.state.target_speed
+    
+        # 計算 PID 輸出
+        pid_value = self.speed_pid(error)
+    
+        # 計算最終 PWM 值
+        pwm_value = self.config.init_pwm + int(pid_value)
+
+        # 限制 PWM 值在最小和最大範圍內
+        pwm_value = max(self.config.init_pwm - 20, min(self.config.init_pwm + 20, pwm_value))
+
         return pwm_value
 
     def compute_steer_value(self) -> int:
@@ -168,13 +197,23 @@ class F1eighthActuator(Node):
         # - You are encouraged to add extra rules to improve the control.
 
         # TODO: Caculate the PID value
-        steer_value = 0
+        if self.state.target_tire_angle is None or self.state.angular_speed is None or self.state.current_speed is None or self.state.current_speed == 0:
+            return self.config.init_steer
+
+        # # 計算轉向誤差
+        L = 0.325
+        self.state.current_tire_angle = math.atan((L * (self.state.angular_speed / 360 * math.pi * 2)) / self.state.current_speed)
+
+        error = self.state.current_tire_angle - self.state.target_tire_angle
+        pid_value = self.steer_pid(error)
+        # 將誤差轉換為舵機 PWM 值
+        steer_pwm = self.config.init_steer - int(pid_value * self.config.tire_angle_to_steer_ratio)
+        # 限制舵機 PWM 值在最小和最大範圍內
+        steer_pwm = max(self.config.min_steer, min(self.config.max_steer, steer_pwm))
+
+        return steer_pwm
 
 
-        return steer_value
-    
-
-    
 @dataclass
 class State:
     target_speed: Optional[float]
@@ -182,6 +221,7 @@ class State:
 
     target_tire_angle: Optional[float]
     current_tire_angle: Optional[float]
+    angular_speed: Optional[float]
 
     # TODO
     # - Add additional state variables needed for your control algorithm
@@ -211,9 +251,4 @@ def main():
     finally:
         # Destroy the node explicitly
         node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
-
+        rclpy.shutdown

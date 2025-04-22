@@ -6,7 +6,7 @@ import Jetson.GPIO as GPIO
 import rclpy
 from rclpy import Parameter
 from rclpy.node import Node
-from autoware_auto_vehicle_msgs.msg import VelocityReport
+from autoware_vehicle_msgs.msg import VelocityReport
 
 
 class F1eighthVelocityReportNode(Node):
