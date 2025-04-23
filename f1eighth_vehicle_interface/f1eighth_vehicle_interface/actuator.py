@@ -203,6 +203,10 @@ class F1eighthActuator(Node):
         # if self.state.target_tire_angle is None or self.state.angular_speed is None or self.state.current_speed is None or self.state.current_speed == 0:
         #     self.get_logger().info(f'steer={self.config.init_steer}')
         #     return self.config.init_steer
+        
+        if self.state.target_tire_angle is None:
+            # self.get_logger().info(f'steer={self.config.init_steer}')
+            return self.config.init_steer
 
         steer = self.state.target_tire_angle * self.config.tire_angle_to_steer_ratio
         steer_pwm = self.config.init_steer + int(steer)
