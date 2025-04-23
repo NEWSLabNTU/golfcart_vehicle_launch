@@ -116,7 +116,7 @@ class F1eighthActuator(Node):
         # Subscribe to IMU data
         imu_subscription = self.create_subscription(
             Imu,
-            "/mpu9250/imu_raw",
+            "/sensing/imu/imu_data",
             self.imu_callback,
             1,
         )
@@ -174,6 +174,7 @@ class F1eighthActuator(Node):
         # TODO: Caculate the PID value
         pid_value = 0
         if self.state.target_speed is None or self.state.target_speed == 0 or self.state.current_speed is None:
+            # self.get_logger().info(f'init={self.config.init_pwm}')
             return self.config.init_pwm
 
         # 計算速度誤差
@@ -186,9 +187,11 @@ class F1eighthActuator(Node):
         pwm_value = self.config.init_pwm + int(pid_value)
 
         # 限制 PWM 值在最小和最大範圍內
-        pwm_value = max(self.config.init_pwm - 20, min(self.config.init_pwm + 20, pwm_value))
+        # pwm_value = max(self.config.init_pwm - 20, min(self.config.init_pwm + 20, pwm_value))
 
+        # self.get_logger().info(f'init={self.config.init_pwm} pid_value={pid_value} pwm_value={pwm_value}')
         return pwm_value
+
 
     def compute_steer_value(self) -> int:
         # TODO
@@ -197,20 +200,15 @@ class F1eighthActuator(Node):
         # - You are encouraged to add extra rules to improve the control.
 
         # TODO: Caculate the PID value
-        if self.state.target_tire_angle is None or self.state.angular_speed is None or self.state.current_speed is None or self.state.current_speed == 0:
-            return self.config.init_steer
+        # if self.state.target_tire_angle is None or self.state.angular_speed is None or self.state.current_speed is None or self.state.current_speed == 0:
+        #     self.get_logger().info(f'steer={self.config.init_steer}')
+        #     return self.config.init_steer
 
-        # # 計算轉向誤差
-        L = 0.325
-        self.state.current_tire_angle = math.atan((L * (self.state.angular_speed / 360 * math.pi * 2)) / self.state.current_speed)
-
-        error = self.state.current_tire_angle - self.state.target_tire_angle
-        pid_value = self.steer_pid(error)
-        # 將誤差轉換為舵機 PWM 值
-        steer_pwm = self.config.init_steer - int(pid_value * self.config.tire_angle_to_steer_ratio)
-        # 限制舵機 PWM 值在最小和最大範圍內
+        steer = self.state.target_tire_angle * self.config.tire_angle_to_steer_ratio
+        steer_pwm = self.config.init_steer + int(steer)
         steer_pwm = max(self.config.min_steer, min(self.config.max_steer, steer_pwm))
-
+        # self.get_logger().info(f'target_angle={self.state.target_tire_angle} steer={steer} steer_pwm={steer_pwm}')
+        
         return steer_pwm
 
 

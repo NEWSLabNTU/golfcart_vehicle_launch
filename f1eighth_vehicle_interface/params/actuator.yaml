@@ -7,33 +7,33 @@
     
     # 直線
     # PID controller parameters
-    kp_speed: 2.5
-    ki_speed: 1.5
+    kp_speed: 15.0
+    ki_speed: 0.0
     kd_speed: 0.05
 
     # 轉彎
     # PID controller parameters
-    kp_steer: 2.5
-    ki_steer: 1.5
+    kp_steer: 5.0
+    ki_steer: 0.0
     kd_steer: 0.05
 
     ## PWM parameters
     # The minimum PWM value when the vehicle drives backward at the max speed.
-    min_pwm: 260
+    min_pwm: 230
     # The initial PWM value when the vehicle stop.
-    init_pwm: 380
+    init_pwm: 340
     # The maximum PWM value when the vehicle drives forward at the max speed.
-    max_pwm: 500
+    max_pwm: 460
 
     ## Steering parameters
     # The initial value for the steering servo that the vehicle go straight forward.
-    init_steer: 500
+    init_steer: 400
     # The minimum control value for steering servo making the leftmost turn.
-    min_steer: 380
+    min_steer: 280
     # The maximum control value for steering servo making the rightmost turn.
-    max_steer: 620
+    max_steer: 520
     # The ratio between the tire angle and the steer value
-    tire_angle_to_steer_ratio: 1.0
+    tire_angle_to_steer_ratio: -2000.0
     
     # The publication rate of control commands
     rate: 100.0
