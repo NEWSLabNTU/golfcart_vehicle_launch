@@ -1,7 +1,7 @@
 from setuptools import find_packages, setup
 from glob import glob
 
-package_name = "f1eighth_vehicle_interface"
+package_name = "autosdv_vehicle_interface"
 
 setup(
     name=package_name,
@@ -21,8 +21,8 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "actuator = f1eighth_vehicle_interface.actuator:main",
-            "velocity_report = f1eighth_vehicle_interface.velocity_report:main",
+            "actuator = autosdv_vehicle_interface.actuator:main",
+            "velocity_report = autosdv_vehicle_interface.velocity_report:main",
         ],
     },
 )

@@ -11,7 +11,7 @@ from autoware_vehicle_msgs.msg import VelocityReport
 
 class F1eighthVelocityReportNode(Node):
     def __init__(self) -> None:
-        super().__init__("f1eighth_velocity_report_node")
+        super().__init__("autosdv_velocity_report_node")
 
         # Configure the node
         self.declare_parameter("pin", Parameter.Type.INTEGER)

@@ -18,7 +18,7 @@ from autoware_vehicle_msgs.msg import VelocityReport
 
 class F1eighthActuator(Node):
     def __init__(self):
-        super().__init__("f1eighth_actuator_node")
+        super().__init__("autosdv_actuator_node")
 
         # Register the publication rate parameter
         self.declare_parameter("i2c_address", Parameter.Type.INTEGER)

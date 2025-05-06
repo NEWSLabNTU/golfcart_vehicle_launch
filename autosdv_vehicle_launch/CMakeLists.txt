@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(f1eighth_vehicle_launch)
+project(autosdv_vehicle_launch)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
