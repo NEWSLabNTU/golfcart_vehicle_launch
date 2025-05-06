@@ -5,6 +5,8 @@
   <version>0.0.0</version>
   <description>The vehicle interface for AutoSDV</description>
   <maintainer email="a0979580915@gmail.com">habby</maintainer>
+  <maintainer email="julialin@cmlab.csie.ntu.edu.tw">Lin,Yi-Hsuan</maintainer>
+  <maintainer email="engine485@cmlab.csie.ntu.edu.tw">Yao,En-Chuan</maintainer>
   <license>Apache License 2.0</license>
 
   <depend>rclpy</depend>
