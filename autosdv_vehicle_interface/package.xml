@@ -3,7 +3,7 @@
 <package format="3">
   <name>autosdv_vehicle_interface</name>
   <version>0.0.0</version>
-  <description>The vehicle interface for F1EIGHTH</description>
+  <description>The vehicle interface for AutoSDV</description>
   <maintainer email="a0979580915@gmail.com">habby</maintainer>
   <license>Apache License 2.0</license>
 

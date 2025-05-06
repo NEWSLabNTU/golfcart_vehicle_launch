@@ -9,7 +9,7 @@ from rclpy.node import Node
 from autoware_vehicle_msgs.msg import VelocityReport
 
 
-class F1eighthVelocityReportNode(Node):
+class AutoSdvVelocityReportNode(Node):
     def __init__(self) -> None:
         super().__init__("autosdv_velocity_report_node")
 
@@ -88,7 +88,7 @@ class F1eighthVelocityReportNode(Node):
 
 def main():
     rclpy.init(args=sys.argv)
-    node = F1eighthVelocityReportNode()
+    node = AutoSdvVelocityReportNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

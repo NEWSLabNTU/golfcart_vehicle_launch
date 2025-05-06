@@ -16,7 +16,7 @@ from autoware_control_msgs.msg import Control
 from autoware_vehicle_msgs.msg import VelocityReport
 
 
-class F1eighthActuator(Node):
+class AutoSdvActuator(Node):
     def __init__(self):
         super().__init__("autosdv_actuator_node")
 
@@ -244,7 +244,7 @@ class Config:
 
 def main():
     rclpy.init(args=sys.argv)
-    node = F1eighthActuator()
+    node = AutoSdvActuator()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
