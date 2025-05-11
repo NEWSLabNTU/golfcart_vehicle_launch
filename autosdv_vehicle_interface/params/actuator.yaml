@@ -4,28 +4,24 @@
     i2c_address: 64
     i2c_busnum: 7
     pwm_freq: 60
-    
-    # 直線
-    # PID controller parameters
+
+    # The publication rate of control commands
+    rate: 100.0
+
+    ## longitudinal control
+    # PID controller parameters for longitudinal control
     kp_speed: 15.0
     ki_speed: 0.0
     kd_speed: 0.05
 
-    # 轉彎
-    # PID controller parameters
-    kp_steer: 5.0
-    ki_steer: 0.0
-    kd_steer: 0.05
-
-    ## PWM parameters
-    # The minimum PWM value when the vehicle drives backward at the max speed.
-    min_pwm: 230
     # The initial PWM value when the vehicle stop.
     init_pwm: 340
+    # The minimum PWM value when the vehicle drives backward at the max speed.
+    min_pwm: 230
     # The maximum PWM value when the vehicle drives forward at the max speed.
     max_pwm: 460
 
-    ## Steering parameters
+    ## Steering
     # The initial value for the steering servo that the vehicle go straight forward.
     init_steer: 400
     # The minimum control value for steering servo making the leftmost turn.
@@ -34,6 +30,3 @@
     max_steer: 520
     # The ratio between the tire angle and the steer value
     tire_angle_to_steer_ratio: -2000.0
-    
-    # The publication rate of control commands
-    rate: 100.0
