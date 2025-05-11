@@ -8,6 +8,9 @@
     # The publication rate of control commands
     rate: 100.0
 
+    # Debug settings
+    enable_debug_publishing: true
+
     ## PWM parameters
     # The initial PWM value when the vehicle stop.
     init_pwm: 340

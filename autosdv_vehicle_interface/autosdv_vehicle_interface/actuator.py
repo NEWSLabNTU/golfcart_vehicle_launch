@@ -18,6 +18,8 @@ from rclpy import Parameter
 from geometry_msgs.msg import TwistWithCovarianceStamped
 from autoware_control_msgs.msg import Control
 from autoware_vehicle_msgs.msg import VelocityReport
+from std_msgs.msg import MultiArrayDimension, MultiArrayLayout
+from autoware_internal_debug_msgs.msg import Float32MultiArrayStamped
 
 
 class AckermannPID:
@@ -167,6 +169,9 @@ class AutoSdvActuator(Node):
         # Publication rate
         self.declare_parameter("rate", Parameter.Type.DOUBLE)
 
+        # Debugging options
+        self.declare_parameter("enable_debug_publishing", Parameter.Type.BOOL)
+
         # Longitudinal control parameters
         self.declare_parameter("kp_speed", Parameter.Type.DOUBLE)
         self.declare_parameter("ki_speed", Parameter.Type.DOUBLE)
@@ -214,6 +219,13 @@ class AutoSdvActuator(Node):
 
         # Publication rate
         params["rate"] = self.get_parameter("rate").get_parameter_value().double_value
+
+        # Debug settings
+        params["enable_debug_publishing"] = (
+            self.get_parameter("enable_debug_publishing")
+            .get_parameter_value()
+            .bool_value
+        )
 
         # PWM parameters
         params["min_pwm"] = (
@@ -383,6 +395,19 @@ class AutoSdvActuator(Node):
             1,
         )
 
+        # Create debug publishers
+        self.debug_control_publisher = self.create_publisher(
+            Float32MultiArrayStamped, "~/debug/control_values", 10
+        )
+
+        self.debug_pwm_publisher = self.create_publisher(
+            Float32MultiArrayStamped, "~/debug/pwm_values", 10
+        )
+
+        self.debug_pid_publisher = self.create_publisher(
+            Float32MultiArrayStamped, "~/debug/pid_values", 10
+        )
+
     def velocity_callback(self, msg):
         """
         Callback for velocity report messages.
@@ -460,9 +485,15 @@ class AutoSdvActuator(Node):
         # Set angle of the steering servo
         self.driver.set_pwm(1, 0, steer_value)
 
-        # Debug logging (can be commented out in production)
-        # self.get_logger().info(f"Speed: {self.state.current_speed:.2f}, Target: {self.state.target_speed:.2f}, "
-        #                        f"Accel: {self.state.current_acceleration:.2f}, PWM: {pwm_value}, Steer: {steer_value}")
+        # Publish debug information if enabled
+        if (
+            self.get_parameter("enable_debug_publishing")
+            .get_parameter_value()
+            .bool_value
+        ):
+            self.publish_debug_control_values(throttle, brake, in_reverse)
+            self.publish_debug_pwm_values(pwm_value, steer_value)
+            self.publish_debug_pid_values()
 
     def run_steering_control(self, delta_time: float) -> int:
         """
@@ -725,6 +756,111 @@ class AutoSdvActuator(Node):
         self.state.accel_control_pedal_target = 0.0
         self.state.last_acceleration = 0.0
         self.state.in_reverse = False
+
+    def publish_debug_control_values(
+        self, throttle: float, brake: float, in_reverse: bool
+    ):
+        """
+        Publish debug information about control values.
+
+        Args:
+            throttle: Current throttle value (0-1)
+            brake: Current brake value (0-1)
+            in_reverse: Current gear state
+        """
+        msg = Float32MultiArrayStamped()
+
+        # Add timestamp
+        msg.stamp = self.get_clock().now().to_msg()
+
+        # Create descriptive layout
+        msg.layout.dim.append(MultiArrayDimension())
+        msg.layout.dim[0].label = "control_values"
+        msg.layout.dim[0].size = 3
+        msg.layout.dim[0].stride = 3
+
+        # Add data: [throttle, brake, in_reverse]
+        msg.data = [throttle, brake, 1.0 if in_reverse else 0.0]
+
+        # Publish message
+        self.debug_control_publisher.publish(msg)
+
+    def publish_debug_pwm_values(self, motor_pwm: int, steer_pwm: int):
+        """
+        Publish debug information about PWM values.
+
+        Args:
+            motor_pwm: Current motor PWM value
+            steer_pwm: Current steering servo PWM value
+        """
+        msg = Float32MultiArrayStamped()
+
+        # Add timestamp
+        msg.stamp = self.get_clock().now().to_msg()
+
+        # Create descriptive layout
+        msg.layout.dim.append(MultiArrayDimension())
+        msg.layout.dim[0].label = "pwm_values"
+        msg.layout.dim[0].size = 2
+        msg.layout.dim[0].stride = 2
+
+        # Add data: [motor_pwm, steer_pwm]
+        msg.data = [float(motor_pwm), float(steer_pwm)]
+
+        # Publish message
+        self.debug_pwm_publisher.publish(msg)
+
+    def publish_debug_pid_values(self):
+        """
+        Publish debug information about PID controller values.
+        """
+        msg = Float32MultiArrayStamped()
+
+        # Add timestamp
+        msg.stamp = self.get_clock().now().to_msg()
+
+        # Create descriptive layout
+        msg.layout.dim.append(MultiArrayDimension())
+        msg.layout.dim[0].label = "pid_values"
+        msg.layout.dim[0].size = 11
+        msg.layout.dim[0].stride = 11
+
+        # Add data with the following format:
+        # [target_speed, current_speed, target_tire_angle, current_tire_angle,
+        #  speed_p, speed_i, speed_d, accel_p, accel_i, accel_d, accel_target]
+        target_speed = (
+            self.state.target_speed if self.state.target_speed is not None else 0.0
+        )
+        current_speed = (
+            self.state.current_speed if self.state.current_speed is not None else 0.0
+        )
+        target_tire_angle = (
+            self.state.target_tire_angle
+            if self.state.target_tire_angle is not None
+            else 0.0
+        )
+        current_tire_angle = (
+            self.state.current_tire_angle
+            if self.state.current_tire_angle is not None
+            else 0.0
+        )
+
+        msg.data = [
+            target_speed,
+            current_speed,
+            target_tire_angle,
+            current_tire_angle,
+            self.speed_controller.proportional,
+            self.speed_controller.integral,
+            self.speed_controller.derivative,
+            self.accel_controller.proportional,
+            self.accel_controller.integral,
+            self.accel_controller.derivative,
+            self.state.speed_control_accel_target,
+        ]
+
+        # Publish message
+        self.debug_pid_publisher.publish(msg)
 
 
 @dataclass
