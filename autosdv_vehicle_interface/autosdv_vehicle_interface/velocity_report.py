@@ -33,7 +33,7 @@ class AutoSdvVelocityReportNode(Node):
         self.declare_parameter("frame_id", Parameter.Type.STRING)
 
         # Create the publisher for velocity reports
-        publisher = self.create_publisher(VelocityReport, "~/input/velocity_status", 1)
+        publisher = self.create_publisher(VelocityReport, "~/output/velocity_status", 1)
 
         # Setup the GPIO pin for wheel rotation detection
         pin = self.get_parameter("pin").get_parameter_value().integer_value

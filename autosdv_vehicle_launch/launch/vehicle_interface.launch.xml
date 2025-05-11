@@ -13,7 +13,7 @@
 
     <node pkg="autosdv_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
       <param from="$(find-pkg-share autosdv_vehicle_interface)/params/velocity_report.yaml"/>
-      <remap from="~/input/velocity_status" to="/vehicle/status/velocity_status"/>
+      <remap from="~/output/velocity_status" to="/vehicle/status/velocity_status"/>
     </node>
   </group>
 </launch>
