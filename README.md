@@ -14,7 +14,7 @@ The AutoSDV vehicle interface consists of:
 
 ### 1. AutoSDV Vehicle Description
 
-Located in `autosdv_vehicle_description/`, this package contains:
+Located in `golfcart_vehicle_description/`, this package contains:
 
 - URDF models for the vehicle (`urdf/vehicle.xacro`)
 - Vehicle information parameters (`config/vehicle_info.param.yaml`)
