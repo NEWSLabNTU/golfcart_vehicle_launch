@@ -22,7 +22,7 @@ Located in `golfcart_vehicle_description/`, this package contains:
 
 ### 2. AutoSDV Vehicle Interface
 
-Located in `autosdv_vehicle_interface/`, this package contains:
+Located in `golfcart_vehicle_interface/`, this package contains:
 
 - **Actuator Node**: Controls the vehicle's motor and steering servo using PWM signals via a PCA9685 PWM driver
 - **Velocity Report Node**: Reads hall effect sensor data to calculate and report the vehicle's velocity
