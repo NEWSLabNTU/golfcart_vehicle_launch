@@ -5,14 +5,14 @@
   <group>
     <push-ros-namespace namespace="autosdv"/>
 
-    <node pkg="autosdv_vehicle_interface" exec="actuator" name="actuator_node" output="screen">
-      <param from="$(find-pkg-share autosdv_vehicle_interface)/params/actuator.yaml"/>
+    <node pkg="golfcart_vehicle_interface" exec="actuator" name="actuator_node" output="screen">
+      <param from="$(find-pkg-share golfcart_vehicle_interface)/params/actuator.yaml"/>
       <remap from="~/input/control_cmd" to="/control/command/control_cmd"/>
       <remap from="~/input/velocity_status" to="/vehicle/status/velocity_status"/>
     </node>
 
-    <node pkg="autosdv_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
-      <param from="$(find-pkg-share autosdv_vehicle_interface)/params/velocity_report.yaml"/>
+    <node pkg="golfcart_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
+      <param from="$(find-pkg-share golfcart_vehicle_interface)/params/velocity_report.yaml"/>
       <remap from="~/output/velocity_status" to="/vehicle/status/velocity_status"/>
     </node>
   </group>
