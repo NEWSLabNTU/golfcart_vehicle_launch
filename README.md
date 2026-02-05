@@ -57,7 +57,7 @@ Key parameters (in `params/velocity_report.yaml`):
 
 ### 3. AutoSDV Vehicle Launch
 
-Located in `autosdv_vehicle_launch/`, this package contains:
+Located in `golfcart_vehicle_launch/`, this package contains:
 - Launch files for starting the vehicle interface (`launch/vehicle_interface.launch.xml`)
 - Configuration for remapping topics between the vehicle interface and Autoware
 
@@ -68,7 +68,7 @@ Located in `autosdv_vehicle_launch/`, this package contains:
 The vehicle interface can be launched using:
 
 ```bash
-ros2 launch autosdv_vehicle_launch vehicle_interface.launch.xml
+ros2 launch golfcart_vehicle_launch vehicle_interface.launch.xml
 ```
 
 This launch file starts both the actuator and velocity report nodes with the appropriate parameters and topic remappings.
