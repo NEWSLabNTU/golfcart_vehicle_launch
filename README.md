@@ -1,10 +1,10 @@
-# AutoSDV Vehicle Interface
+# Golf Cart Vehicle Interface
 
-This package provides the vehicle interface components for the AutoSDV autonomous vehicle platform. It enables communication between Autoware's control commands and the vehicle's hardware actuators, as well as reporting the vehicle's velocity back to the Autoware stack.
+This package provides the vehicle interface components for the Golf Cart autonomous vehicle platform. It enables communication between Autoware's control commands and the vehicle's hardware actuators, as well as reporting the vehicle's velocity back to the Autoware stack.
 
 ## Overview
 
-The AutoSDV vehicle interface consists of:
+The Golf Cart vehicle interface consists of:
 
 1. **Vehicle Description**: URDF and configuration files describing the vehicle's physical properties
 2. **Vehicle Interface**: ROS2 nodes that interface with the vehicle's hardware
@@ -12,7 +12,7 @@ The AutoSDV vehicle interface consists of:
 
 ## Components
 
-### 1. AutoSDV Vehicle Description
+### 1. Golf Cart Vehicle Description
 
 Located in `golfcart_vehicle_description/`, this package contains:
 
@@ -20,7 +20,7 @@ Located in `golfcart_vehicle_description/`, this package contains:
 - Vehicle information parameters (`config/vehicle_info.param.yaml`)
 - 3D meshes of the vehicle (`mesh/`)
 
-### 2. AutoSDV Vehicle Interface
+### 2. Golf Cart Vehicle Interface
 
 Located in `golfcart_vehicle_interface/`, this package contains:
 
@@ -55,7 +55,7 @@ Key parameters (in `params/velocity_report.yaml`):
 - Wheel diameter and markers per rotation
 - Publication rate settings
 
-### 3. AutoSDV Vehicle Launch
+### 3. Golf Cart Vehicle Launch
 
 Located in `golfcart_vehicle_launch/`, this package contains:
 - Launch files for starting the vehicle interface (`launch/vehicle_interface.launch.xml`)

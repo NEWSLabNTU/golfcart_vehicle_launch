@@ -3,7 +3,7 @@
   <arg name="vehicle_id" default="$(env VEHICLE_ID default)"/>
 
   <group>
-    <push-ros-namespace namespace="autosdv"/>
+    <push-ros-namespace namespace="golfcart"/>
 
     <node pkg="golfcart_vehicle_interface" exec="actuator" name="actuator_node" output="screen">
       <param from="$(find-pkg-share golfcart_vehicle_interface)/params/actuator.yaml"/>

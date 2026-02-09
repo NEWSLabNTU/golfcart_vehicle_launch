@@ -3,16 +3,13 @@
 <package format="3">
   <name>golfcart_vehicle_interface</name>
   <version>0.0.0</version>
-  <description>The vehicle interface for AutoSDV</description>
+  <description>Vehicle interface stub for Golf Cart (awaiting Turing Drive DBW)</description>
   <maintainer email="a0979580915@gmail.com">habby</maintainer>
-  <maintainer email="julialin@cmlab.csie.ntu.edu.tw">Lin,Yi-Hsuan</maintainer>
-  <maintainer email="engine485@cmlab.csie.ntu.edu.tw">Yao,En-Chuan</maintainer>
   <license>Apache License 2.0</license>
 
   <depend>rclpy</depend>
-  <depend>std_msgs</depend>
   <depend>autoware_control_msgs</depend>
-  <depend>autoware_internal_debug_msgs</depend>
+  <depend>autoware_vehicle_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

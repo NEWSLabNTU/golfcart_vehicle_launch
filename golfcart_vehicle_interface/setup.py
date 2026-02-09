@@ -16,7 +16,7 @@ setup(
     zip_safe=True,
     maintainer="habby",
     maintainer_email="a0979580915@gmail.com",
-    description="Vehicle interface for AutoSDV",
+    description="Vehicle interface stub for Golf Cart (awaiting Turing Drive DBW)",
     license="Apache License 2.0",
     tests_require=["pytest"],
     entry_points={
