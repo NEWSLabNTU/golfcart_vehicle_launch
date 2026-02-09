@@ -1,16 +1,7 @@
 /**:
   ros__parameters:
-    # The input GPIO pin number.
-    pin: 15
-    
-    # The wheel diameter in centimeters.
-    wheel_diameter: 10.5
-    
-    # The number of markers on the wheel.
-    markers_per_rotation: 12
-    
-    # The publication rate of velocity report messages
+    # Publication rate (Hz)
     rate: 20.0
 
-    # The frame ID marked on output messages
+    # Frame ID for velocity report messages
     frame_id: "base_link"
