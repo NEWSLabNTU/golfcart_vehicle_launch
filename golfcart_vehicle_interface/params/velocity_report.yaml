@@ -1,7 +1,0 @@
-/**:
-  ros__parameters:
-    # Publication rate (Hz)
-    rate: 20.0
-
-    # Frame ID for velocity report messages
-    frame_id: "base_link"

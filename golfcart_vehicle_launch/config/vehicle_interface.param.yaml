@@ -1,0 +1,10 @@
+/**:
+  ros__parameters:
+    # SocketCAN interface name; mandatory, no default in code.
+    can_interface: can0
+    # ADS_VCU_* command frame rate (Hz).
+    tx_rate_hz: 100.0
+    # Autoware vehicle status report rate (Hz).
+    publish_rate_hz: 50.0
+    # Frame ID for VelocityReport.header.
+    frame_id: base_link

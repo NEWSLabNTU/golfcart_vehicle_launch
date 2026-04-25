@@ -1,19 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
-  <arg name="vehicle_id" default="$(env VEHICLE_ID default)"/>
+  <arg name="can_interface" description="SocketCAN interface (e.g. can0, can1)"/>
+  <arg name="param_file" default="$(find-pkg-share golfcart_vehicle_launch)/config/vehicle_interface.param.yaml"/>
 
-  <group>
-    <push-ros-namespace namespace="golfcart"/>
+  <node pkg="golfcart_vehicle_interface" exec="golfcart_vehicle_interface" name="vehicle_interface" output="screen">
+    <param from="$(var param_file)"/>
+    <param name="can_interface" value="$(var can_interface)"/>
 
-    <node pkg="golfcart_vehicle_interface" exec="actuator" name="actuator_node" output="screen">
-      <param from="$(find-pkg-share golfcart_vehicle_interface)/params/actuator.yaml"/>
-      <remap from="~/input/control_cmd" to="/control/command/control_cmd"/>
-      <remap from="~/input/velocity_status" to="/vehicle/status/velocity_status"/>
-    </node>
+    <remap from="~/input/control_cmd" to="/control/command/control_cmd"/>
+    <remap from="~/input/gear_cmd" to="/control/command/gear_cmd"/>
+    <remap from="~/input/turn_indicators_cmd" to="/control/command/turn_indicators_cmd"/>
+    <remap from="~/input/hazard_lights_cmd" to="/control/command/hazard_lights_cmd"/>
+    <remap from="~/input/control_mode_request" to="/control/control_mode_request"/>
 
-    <node pkg="golfcart_vehicle_interface" exec="velocity_report" name="velocity_report_node" output="screen">
-      <param from="$(find-pkg-share golfcart_vehicle_interface)/params/velocity_report.yaml"/>
-      <remap from="~/output/velocity_status" to="/vehicle/status/velocity_status"/>
-    </node>
-  </group>
+    <remap from="~/output/velocity_status" to="/vehicle/status/velocity_status"/>
+    <remap from="~/output/steering_status" to="/vehicle/status/steering_status"/>
+    <remap from="~/output/gear_status" to="/vehicle/status/gear_status"/>
+    <remap from="~/output/control_mode" to="/vehicle/status/control_mode"/>
+    <remap from="~/output/turn_indicators_status" to="/vehicle/status/turn_indicators_status"/>
+    <remap from="~/output/hazard_lights_status" to="/vehicle/status/hazard_lights_status"/>
+  </node>
 </launch>

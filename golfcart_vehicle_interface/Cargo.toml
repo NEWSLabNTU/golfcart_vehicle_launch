@@ -1,0 +1,17 @@
+[package]
+name = "golfcart_vehicle_interface"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+parking_lot = "0.12"
+socketcan = "3.5"
+thiserror = "2.0"
+
+# ROS 2 dependencies (resolved via ament_index by colcon-cargo-ros2)
+rclrs = "*"
+builtin_interfaces = "*"
+std_msgs = "*"
+autoware_control_msgs = "*"
+autoware_vehicle_msgs = "*"

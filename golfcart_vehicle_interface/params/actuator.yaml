@@ -1,4 +1,0 @@
-/**:
-  ros__parameters:
-    # Control loop rate (Hz)
-    rate: 20.0
