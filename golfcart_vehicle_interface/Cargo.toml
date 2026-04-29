@@ -2,9 +2,11 @@
 name = "golfcart_vehicle_interface"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0"
+bitvec = "1"
 parking_lot = "0.12"
 socketcan = "3.5"
 thiserror = "2.0"
@@ -13,5 +15,19 @@ thiserror = "2.0"
 rclrs = "*"
 builtin_interfaces = "*"
 std_msgs = "*"
+diagnostic_msgs = "*"
 autoware_control_msgs = "*"
 autoware_vehicle_msgs = "*"
+
+[build-dependencies]
+anyhow = "1.0"
+dbc-codegen = "0.3"
+
+[features]
+# dbc-codegen output gates `Debug` impls on `cfg(feature = "debug")` for the
+# message structs and on `cfg(any(feature = "debug", feature = "std"))` for
+# `CanError`. Enable both so `StatusState`'s `derive(Debug)` and our `.expect`
+# calls compile.
+default = ["debug", "std"]
+debug = []
+std = []

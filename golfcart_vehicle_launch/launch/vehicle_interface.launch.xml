@@ -12,6 +12,7 @@
     <remap from="~/input/turn_indicators_cmd" to="/control/command/turn_indicators_cmd"/>
     <remap from="~/input/hazard_lights_cmd" to="/control/command/hazard_lights_cmd"/>
     <remap from="~/input/control_mode_request" to="/control/control_mode_request"/>
+    <remap from="~/input/emergency_stop" to="/vehicle/emergency_stop"/>
 
     <remap from="~/output/velocity_status" to="/vehicle/status/velocity_status"/>
     <remap from="~/output/steering_status" to="/vehicle/status/steering_status"/>

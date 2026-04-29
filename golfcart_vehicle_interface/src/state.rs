@@ -29,7 +29,16 @@ pub struct CommandState {
 
     pub blinker: BlinkerCtrl,
     pub headlight: bool,
+    /// Driver-side e-stop latched in software (set via future
+    /// `~/input/emergency_stop` topic; currently only the ECU-side e-stop is
+    /// handled, see `fault_latched`).
     pub estop: bool,
+    /// Sticky latch raised when the ECU reports any hazard
+    /// (`Vcu_Ads_Estop` or any of the four `Vcu_Ads_Error_Code_*` bits).
+    /// While set, the TX loop disengages and commands a safety brake; the
+    /// engage service rejects mode=AUTONOMOUS until the user sends a
+    /// MANUAL/NO_COMMAND request to clear it.
+    pub fault_latched: bool,
     /// Last time a Control message was received. Commands are only sent while
     /// recent — protects the vehicle from a stalled planner.
     pub last_control_at: Option<Instant>,
@@ -51,6 +60,7 @@ impl Default for CommandState {
             blinker: BlinkerCtrl::Off,
             headlight: false,
             estop: false,
+            fault_latched: false,
             last_control_at: None,
         }
     }
