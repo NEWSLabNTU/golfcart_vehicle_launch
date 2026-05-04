@@ -23,6 +23,37 @@ pub use messages::{
 };
 
 // ============================================================================
+// DBC physical-range limits. Used to clamp Autoware setpoints before encode so
+// AdsVcu* constructors never error and the VCU sees in-spec values.
+// ============================================================================
+
+/// Throttle position percent (Ads_Vcu_Target_Throttle_Pos). Currently unused
+/// — Autoware drives the cart through speed+accel, not pedal — but kept for
+/// future actuation_cmd path.
+#[allow(dead_code)]
+pub const THROTTLE_PCT_MIN: f32 = 0.0;
+#[allow(dead_code)]
+pub const THROTTLE_PCT_MAX: f32 = 100.0;
+/// Forward acceleration (Ads_Vcu_Target_Acceleration), unsigned.
+pub const ACCEL_MPS2_MIN: f32 = 0.0;
+pub const ACCEL_MPS2_MAX: f32 = 65.535;
+/// Vehicle target speed (Ads_Vcu_Target_Speed), signed (negative = reverse).
+pub const SPEED_MPS_MIN: f32 = -32.768;
+pub const SPEED_MPS_MAX: f32 = 32.767;
+/// Brake pressure command (Ads_Vcu_Target_Pressure). Used by safety-brake
+/// const path; clamp helpers retained for future custom-pressure paths.
+#[allow(dead_code)]
+pub const BRAKE_PRESSURE_MPA_MIN: f32 = 0.0;
+#[allow(dead_code)]
+pub const BRAKE_PRESSURE_MPA_MAX: f32 = 12.75;
+/// Brake deceleration command (Ads_Vcu_Target_Deceleration), unsigned.
+pub const DECEL_MPS2_MIN: f32 = 0.0;
+pub const DECEL_MPS2_MAX: f32 = 12.75;
+/// Tire angle command (Ads_Vcu_Target_Tire_Angle), degrees signed.
+pub const TIRE_ANGLE_DEG_MIN: f32 = -65.536;
+pub const TIRE_ANGLE_DEG_MAX: f32 = 65.534;
+
+// ============================================================================
 // Domain enums (mapped to/from raw u8/bool fields in the generated structs).
 // Encoded values match the DBC `VAL_` tables in CAX_ADS_CAN.dbc.
 // ============================================================================
@@ -52,6 +83,7 @@ impl Gear {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum MotorMode {
     Pedal,
     Speed,
@@ -72,6 +104,7 @@ impl Default for MotorMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum BrakeMode {
     Invalid = 0,
     Stroke = 1,
@@ -92,6 +125,7 @@ impl Default for BrakeMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum EpsMode {
     Invalid = 0,
     FrontWheel = 1,
@@ -125,6 +159,7 @@ impl BlinkerCtrl {
     pub fn to_raw(self) -> u8 {
         self as u8
     }
+    #[allow(dead_code)]
     pub fn from_raw(v: u8) -> Self {
         match v & 0x3 {
             1 => Self::Left,

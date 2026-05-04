@@ -13,6 +13,7 @@
     <remap from="~/input/hazard_lights_cmd" to="/control/command/hazard_lights_cmd"/>
     <remap from="~/input/control_mode_request" to="/control/control_mode_request"/>
     <remap from="~/input/emergency_stop" to="/vehicle/emergency_stop"/>
+    <remap from="~/input/emergency_cmd" to="/control/command/emergency_cmd"/>
 
     <remap from="~/output/velocity_status" to="/vehicle/status/velocity_status"/>
     <remap from="~/output/steering_status" to="/vehicle/status/steering_status"/>
@@ -20,5 +21,6 @@
     <remap from="~/output/control_mode" to="/vehicle/status/control_mode"/>
     <remap from="~/output/turn_indicators_status" to="/vehicle/status/turn_indicators_status"/>
     <remap from="~/output/hazard_lights_status" to="/vehicle/status/hazard_lights_status"/>
+    <remap from="~/output/actuation_status" to="/vehicle/status/actuation_status"/>
   </node>
 </launch>

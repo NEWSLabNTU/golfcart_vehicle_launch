@@ -18,6 +18,7 @@ std_msgs = "*"
 diagnostic_msgs = "*"
 autoware_control_msgs = "*"
 autoware_vehicle_msgs = "*"
+tier4_vehicle_msgs = "*"
 
 [build-dependencies]
 anyhow = "1.0"
