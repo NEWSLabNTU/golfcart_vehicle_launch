@@ -34,16 +34,16 @@ The TX thread evaluates a four-state machine every tick to decide what to
 put on the wire.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> EngagedWaiting: service AUTONOMOUS,\nno fault
-    EngagedWaiting --> Driving: first Control msg arrives
-    EngagedWaiting --> Idle: service MANUAL/NO_COMMAND
-    EngagedWaiting --> SafetyBrake: ECU fault / driver e-stop
-    Driving --> SafetyBrake: Control stale > control_timeout_ms\nOR ECU hazard\nOR driver e-stop\nOR persistent CAN TX failure
-    Driving --> Idle: service MANUAL/NO_COMMAND
-    SafetyBrake --> Idle: service MANUAL/NO_COMMAND\n(clears fault_latched)
-    Driving --> Driving: Control fresh
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+flowchart TD
+    Start([ start ]) --> Idle
+    Idle -->|"service AUTONOMOUS<br/>(no fault)"| EngagedWaiting
+    EngagedWaiting -->|"first Control msg arrives"| Driving
+    EngagedWaiting -->|"service MANUAL / NO_COMMAND"| Idle
+    EngagedWaiting -->|"ECU fault / driver e-stop"| SafetyBrake
+    Driving -->|"Control stale > control_timeout_ms<br/>OR ECU hazard<br/>OR driver e-stop<br/>OR persistent CAN TX failure"| SafetyBrake
+    Driving -->|"service MANUAL / NO_COMMAND"| Idle
+    SafetyBrake -->|"service MANUAL / NO_COMMAND<br/>(clears fault_latched)"| Idle
 ```
 
 ### Per-mode TX payload
