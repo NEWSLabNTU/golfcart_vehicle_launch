@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
+# Default cargo discovery picks up `src/main.rs` plus any `src/bin/*.rs`.
+# `mock_vcu` lives at `src/bin/mock_vcu.rs` so it doesn't need to be listed
+# explicitly.
+[[bin]]
+name = "golfcart_vehicle_interface"
+path = "src/main.rs"
+
+[[bin]]
+name = "mock_vcu"
+path = "src/bin/mock_vcu.rs"
+
 [dependencies]
 anyhow = "1.0"
 bitvec = "1"
