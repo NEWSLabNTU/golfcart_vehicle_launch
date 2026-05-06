@@ -7,6 +7,12 @@ use std::sync::Arc;
 pub struct Params {
     /// SocketCAN interface name (e.g. `can0`). Mandatory, no default.
     pub can_interface: String,
+    /// Master enable for CAN TX. When `false`, the TX thread runs all of its
+    /// logic (state machine, slew limiting, frame encoding) but skips the
+    /// final socket write. Lets the node be exercised on a real or virtual
+    /// CAN interface without driving the vehicle. Default `false` for safety;
+    /// production launches must opt in via `tx_enabled:=true`.
+    pub tx_enabled: bool,
     /// Frequency at which the four ADS_VCU_* command frames are transmitted.
     pub tx_rate_hz: f64,
     /// Frequency at which Autoware status reports are published.
@@ -56,6 +62,12 @@ impl Params {
             .context("`can_interface` parameter is required (e.g. can0)")?
             .get()
             .to_string();
+
+        let tx_enabled = node
+            .declare_parameter("tx_enabled")
+            .default(false)
+            .mandatory()?
+            .get();
 
         let tx_rate_hz = node
             .declare_parameter("tx_rate_hz")
@@ -151,6 +163,7 @@ impl Params {
 
         Ok(Self {
             can_interface,
+            tx_enabled,
             tx_rate_hz,
             publish_rate_hz,
             frame_id,

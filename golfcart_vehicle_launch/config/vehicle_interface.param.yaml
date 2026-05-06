@@ -2,6 +2,11 @@
   ros__parameters:
     # SocketCAN interface name; mandatory, no default in code.
     can_interface: can0
+    # Master enable for CAN TX. When false, the node runs all of its logic
+    # but skips the final socket write so it cannot drive the vehicle. RX
+    # still flows so reports/diagnostics remain populated. Default false for
+    # safety; production launches must opt in via `tx_enabled:=true`.
+    tx_enabled: false
     # ADS_VCU_* command frame rate (Hz).
     tx_rate_hz: 100.0
     # Autoware vehicle status report rate (Hz).

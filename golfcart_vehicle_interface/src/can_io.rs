@@ -8,7 +8,7 @@
 //! Frame encode/decode comes from the dbc-codegen output; see `dbc.rs`.
 
 use anyhow::{Context, Result};
-use rclrs::{log_error, log_warn};
+use rclrs::{log_error, log_info, log_warn};
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, SocketOptions, StandardId};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -58,6 +58,7 @@ pub struct GearShiftConfig {
 
 pub fn spawn(
     interface: &str,
+    tx_enabled: bool,
     tx_rate_hz: f64,
     control_timeout: Duration,
     steer_limits: SteerLimits,
@@ -91,6 +92,7 @@ pub fn spawn(
             tx_loop(
                 tx_socket,
                 tx_iface,
+                tx_enabled,
                 tx_state,
                 tx_running,
                 period,
@@ -261,6 +263,7 @@ fn handle_vehicle_status(state: &Arc<SharedState>, m: &VcuAdsVehicle) {
 fn tx_loop(
     mut socket: CanSocket,
     interface: String,
+    tx_enabled: bool,
     state: Arc<SharedState>,
     running: Arc<AtomicBool>,
     period: Duration,
@@ -268,6 +271,15 @@ fn tx_loop(
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
 ) {
+    if !tx_enabled {
+        log_warn!(
+            NODE_NAME,
+            "CAN TX DISABLED via tx_enabled=false: encoded frames will NOT \
+             be sent to '{interface}'. Vehicle will not move from this node."
+        );
+    } else {
+        log_info!(NODE_NAME, "CAN TX enabled on '{interface}'");
+    }
     // MTR-frame staleness threshold for TX-side decisions. Independent of the
     // ROS-side `report_timeout_ms` because TX runs much faster (100 Hz) and a
     // shorter window keeps gating responsive to RX dropouts.
@@ -371,7 +383,7 @@ fn tx_loop(
         const TX_FAIL_THRESHOLD: u32 = 25; // ~250 ms at 100 Hz
         const TX_LOG_INTERVAL: Duration = Duration::from_secs(1);
         let mut tick_failed = false;
-        for (id, payload) in build_frames(
+        let frames = build_frames(
             &cmd_snapshot,
             mode,
             rolling,
@@ -382,17 +394,24 @@ fn tx_loop(
             } else {
                 None
             },
-        ) {
-            if let Err(e) = send_frame(&socket, id, &payload) {
-                tick_failed = true;
-                let log_now = last_tx_error_log
-                    .map_or(true, |t| t.elapsed() >= TX_LOG_INTERVAL);
-                if log_now {
-                    log_error!(
-                        NODE_NAME,
-                        "CAN write error (id 0x{id:x}, consecutive={consecutive_tx_errors}): {e}"
-                    );
-                    last_tx_error_log = Some(Instant::now());
+        );
+        // Skip the actual socket write when TX is administratively disabled.
+        // We still run the rest of the loop so state (gear/blinker echo,
+        // slew limiter) advances exactly as it would in production — useful
+        // for bench testing the encoder pipeline without driving the cart.
+        if tx_enabled {
+            for (id, payload) in frames {
+                if let Err(e) = send_frame(&socket, id, &payload) {
+                    tick_failed = true;
+                    let log_now = last_tx_error_log
+                        .map_or(true, |t| t.elapsed() >= TX_LOG_INTERVAL);
+                    if log_now {
+                        log_error!(
+                            NODE_NAME,
+                            "CAN write error (id 0x{id:x}, consecutive={consecutive_tx_errors}): {e}"
+                        );
+                        last_tx_error_log = Some(Instant::now());
+                    }
                 }
             }
         }

@@ -38,6 +38,7 @@ fn main() -> Result<()> {
     };
     let can_threads = match can_io::spawn(
         &params.can_interface,
+        params.tx_enabled,
         params.tx_rate_hz,
         Duration::from_millis(params.control_timeout_ms),
         steer_limits,

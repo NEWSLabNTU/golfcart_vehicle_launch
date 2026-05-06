@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Standalone bench/test launch for golfcart_vehicle_interface.
+
+  Runs the vehicle interface node by itself with CAN TX disabled by default
+  so the cart cannot be commanded into motion. Use against a real bus, a
+  vcan0 loopback, or any interface that simply exists — RX still flows so
+  /vehicle/status/* and /diagnostics are populated.
+
+  Override `tx_enabled:=true` only when you intend to actually drive.
+-->
 <launch>
-  <arg name="can_interface" default="can0" description="SocketCAN interface (e.g. can0, can1)"/>
-  <arg name="tx_enabled" default="false" description="Master enable for CAN TX. Default false for safety; set true to actually drive the vehicle."/>
+  <arg name="can_interface" default="can0" description="SocketCAN interface (real or vcan)"/>
+  <arg name="tx_enabled" default="false" description="CAN TX master enable. Defaults to false for safety on this test launch."/>
   <arg name="param_file" default="$(find-pkg-share golfcart_vehicle_launch)/config/vehicle_interface.param.yaml"/>
 
   <node pkg="golfcart_vehicle_interface" exec="golfcart_vehicle_interface" name="vehicle_interface" output="screen">

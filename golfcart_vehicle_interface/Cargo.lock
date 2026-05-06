@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostic_msgs"
-version = "4.9.1"
+version = "4.9.0"
 dependencies = [
  "rosidl_runtime_rs",
  "std_msgs",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "std_msgs"
-version = "4.9.1"
+version = "4.9.0"
 dependencies = [
  "builtin_interfaces",
  "rosidl_runtime_rs",
@@ -1461,7 +1461,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
+name = "action_msgs"
+version = "1.2.2"
+
+[[patch.unused]]
 name = "autoware_common_msgs"
+version = "1.11.0"
+
+[[patch.unused]]
+name = "autoware_internal_debug_msgs"
+version = "1.12.0"
+
+[[patch.unused]]
+name = "autoware_internal_localization_msgs"
+version = "1.12.0"
+
+[[patch.unused]]
+name = "autoware_map_msgs"
 version = "1.11.0"
 
 [[patch.unused]]
@@ -1469,17 +1485,41 @@ name = "autoware_planning_msgs"
 version = "1.11.0"
 
 [[patch.unused]]
+name = "geographic_msgs"
+version = "1.0.6"
+
+[[patch.unused]]
 name = "geometry_msgs"
-version = "4.9.1"
+version = "4.9.0"
 
 [[patch.unused]]
 name = "nav_msgs"
-version = "4.9.1"
+version = "4.9.0"
+
+[[patch.unused]]
+name = "sensor_msgs"
+version = "4.9.0"
+
+[[patch.unused]]
+name = "std_srvs"
+version = "4.9.0"
+
+[[patch.unused]]
+name = "tf2_msgs"
+version = "0.25.18"
 
 [[patch.unused]]
 name = "tier4_control_msgs"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "tier4_localization_msgs"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "unique_identifier_msgs"
 version = "2.2.1"
+
+[[patch.unused]]
+name = "visualization_msgs"
+version = "4.9.0"
