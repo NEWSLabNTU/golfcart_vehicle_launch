@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result};
 use rclrs::{log_error, log_info, log_warn};
-use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, SocketOptions, StandardId};
+use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

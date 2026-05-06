@@ -43,3 +43,8 @@ dbc-codegen = "0.3"
 default = ["debug", "std"]
 debug = []
 std = []
+# Below are dbc-codegen feature gates we don't enable but must declare so
+# rustc's `unexpected_cfgs` lint stays quiet. Enabling them is a deliberate
+# choice (more codegen, more deps), not a quick win.
+range_checked = []
+arb = []

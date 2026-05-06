@@ -17,9 +17,13 @@ pub mod messages {
     include!(concat!(env!("OUT_DIR"), "/dbc_messages.rs"));
 }
 
+// `mock_vcu` reuses this file via `mod dbc;` but only touches the VCU_ADS_*
+// types, while the production binary uses the ADS_VCU_* side. Suppress the
+// per-binary unused-import noise rather than splitting the re-export.
+#[allow(unused_imports)]
 pub use messages::{
-    AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, CanError, Messages, VcuAdsBrk, VcuAdsEps,
-    VcuAdsMtr, VcuAdsVehicle,
+    AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, Messages, VcuAdsBrk, VcuAdsEps, VcuAdsMtr,
+    VcuAdsVehicle,
 };
 
 // ============================================================================
