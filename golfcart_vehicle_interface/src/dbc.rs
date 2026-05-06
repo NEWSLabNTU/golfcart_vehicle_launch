@@ -23,35 +23,14 @@ pub use messages::{
 };
 
 // ============================================================================
-// DBC physical-range limits. Used to clamp Autoware setpoints before encode so
-// AdsVcu* constructors never error and the VCU sees in-spec values.
+// DBC physical-range limits used to clamp Autoware setpoints before encode.
+// Numeric values come from the vendor DBC and are emitted by `build.rs` into
+// `$OUT_DIR/dbc_limits.rs` so they never appear in source. The constants
+// here are the same names downstream code already depends on; only their
+// definition has moved.
 // ============================================================================
 
-/// Throttle position percent (Ads_Vcu_Target_Throttle_Pos). Currently unused
-/// — Autoware drives the cart through speed+accel, not pedal — but kept for
-/// future actuation_cmd path.
-#[allow(dead_code)]
-pub const THROTTLE_PCT_MIN: f32 = 0.0;
-#[allow(dead_code)]
-pub const THROTTLE_PCT_MAX: f32 = 100.0;
-/// Forward acceleration (Ads_Vcu_Target_Acceleration), unsigned.
-pub const ACCEL_MPS2_MIN: f32 = 0.0;
-pub const ACCEL_MPS2_MAX: f32 = 65.535;
-/// Vehicle target speed (Ads_Vcu_Target_Speed), signed (negative = reverse).
-pub const SPEED_MPS_MIN: f32 = -32.768;
-pub const SPEED_MPS_MAX: f32 = 32.767;
-/// Brake pressure command (Ads_Vcu_Target_Pressure). Used by safety-brake
-/// const path; clamp helpers retained for future custom-pressure paths.
-#[allow(dead_code)]
-pub const BRAKE_PRESSURE_MPA_MIN: f32 = 0.0;
-#[allow(dead_code)]
-pub const BRAKE_PRESSURE_MPA_MAX: f32 = 12.75;
-/// Brake deceleration command (Ads_Vcu_Target_Deceleration), unsigned.
-pub const DECEL_MPS2_MIN: f32 = 0.0;
-pub const DECEL_MPS2_MAX: f32 = 12.75;
-/// Tire angle command (Ads_Vcu_Target_Tire_Angle), degrees signed.
-pub const TIRE_ANGLE_DEG_MIN: f32 = -65.536;
-pub const TIRE_ANGLE_DEG_MAX: f32 = 65.534;
+include!(concat!(env!("OUT_DIR"), "/dbc_limits.rs"));
 
 // ============================================================================
 // Domain enums (mapped to/from raw u8/bool fields in the generated structs).
@@ -201,54 +180,58 @@ pub fn checksum_stub() -> u8 {
 mod tests {
     use super::*;
 
+    // Tests stay structural: build via the generated constructors and
+    // re-parse via the generated decoders. No raw-byte assertions — those
+    // would re-encode the proprietary wire format in source.
+
     #[test]
-    fn motor_speed_mode_round_trips() {
+    fn motor_speed_round_trips() {
+        let speed = -2.5_f32;
+        let accel = 1.234_f32;
         let mtr = AdsVcuMtr::new(
-            true,                 // motor_en
-            true,                 // gear_en
+            true,
+            true,
             MotorMode::Speed.as_bool(),
-            Gear::Drive.to_raw(), // target_gear
-            0.0,                  // throttle %
-            1.234,                // accel m/s²
-            -2.5,                 // speed m/s
+            Gear::Drive.to_raw(),
+            0.0,
+            accel,
+            speed,
             checksum_stub(),
         )
         .unwrap();
-        let buf = mtr.raw();
-        // byte 0: motor_en | gear_en<<1 | mode<<2 | gear<<3 = 0b0000_1111
-        assert_eq!(buf[0], 0b0000_1111);
-        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 1234);
-        assert_eq!(i16::from_le_bytes([buf[4], buf[5]]), -2500);
+        let parsed = AdsVcuMtr::try_from(mtr.raw().as_slice()).unwrap();
+        assert!((parsed.ads_vcu_target_speed() - speed).abs() < 0.01);
+        assert!((parsed.ads_vcu_target_acceleration() - accel).abs() < 0.01);
+        assert_eq!(parsed.ads_vcu_target_gear_raw(), Gear::Drive.to_raw());
     }
 
     #[test]
-    fn eps_signed_angle() {
+    fn eps_signed_angle_round_trips() {
+        let angle = -10.0_f32;
         let eps = AdsVcuEps::new(
             true,
             EpsMode::FrontWheel.to_raw(),
-            -10.0, // tire angle deg
-            5.0,   // tire angular speed deg/s
+            angle,
+            5.0,
             checksum_stub(),
         )
         .unwrap();
-        let buf = eps.raw();
-        assert_eq!(buf[0], 0b0000_0011);
-        assert_eq!(i16::from_le_bytes([buf[1], buf[2]]), -5000);
-        assert_eq!(buf[3] as i8, 25);
+        let parsed = AdsVcuEps::try_from(eps.raw().as_slice()).unwrap();
+        assert!((parsed.ads_vcu_target_tire_angle() - angle).abs() < 0.01);
     }
 
     #[test]
-    fn motor_status_decode() {
-        // state=2(Auto), throttle=42, gear=1(D), speed=1.5 m/s -> 1500 raw
-        let mut buf = [0u8; 8];
-        buf[0] = 2;
-        buf[1] = 42;
-        buf[2] = 1;
-        buf[3..5].copy_from_slice(&1500i16.to_le_bytes());
-        let m = VcuAdsMtr::try_from(buf.as_slice()).unwrap();
-        assert_eq!(m.vcu_ads_motor_state_raw(), 2);
-        assert_eq!(m.vcu_ads_throttle_position_raw(), 42);
-        assert_eq!(Gear::from_raw(m.vcu_ads_gear_position_raw()), Gear::Drive);
-        assert!((m.vcu_ads_vehicle_speed() - 1.5).abs() < 1e-6);
+    fn motor_status_field_access() {
+        // Round-trip a VCU_ADS_MTR via the generated constructor so we
+        // exercise decode without hand-crafting a payload.
+        let mtr = VcuAdsMtr::new(2, 42, Gear::Drive.to_raw(), 1.5).unwrap();
+        let parsed = VcuAdsMtr::try_from(mtr.raw().as_slice()).unwrap();
+        assert_eq!(parsed.vcu_ads_motor_state_raw(), 2);
+        assert_eq!(parsed.vcu_ads_throttle_position_raw(), 42);
+        assert_eq!(
+            Gear::from_raw(parsed.vcu_ads_gear_position_raw()),
+            Gear::Drive,
+        );
+        assert!((parsed.vcu_ads_vehicle_speed() - 1.5).abs() < 0.01);
     }
 }

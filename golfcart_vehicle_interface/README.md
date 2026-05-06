@@ -75,21 +75,22 @@ DBC source: `CAX_ADS_CAN.dbc`. Frame structures generated at build time by
 
 ### TX (ADS → VCU) — written by this node at `tx_rate_hz`
 
-| ID    | Name             | Key signals |
-|-------|------------------|-------------|
-| 0x065 | `ADS_VCU_EPS`    | `Eps_En`, `Eps_Mode`, `Target_Tire_Angle` (deg, signed), `Target_Tire_Ang_Speed` |
-| 0x068 | `ADS_VCU_BRK`    | `Brk_En`, `Brk_Mode`, `Target_Stroke` (mm), `Target_Pressure` (MPa), `Target_Deceleration` (m/s²) |
-| 0x075 | `ADS_VCU_MTR`    | `Motor_En`, `Gear_En`, `Mtr_Mode`, `Target_Gear`, `Target_Throttle_Pos` (%), `Target_Acceleration` (m/s²), `Target_Speed` (m/s, signed) |
-| 0x43F | `ADS_VCU_VEHICLE`| `Veh_Auto_En`, `Ads_Status`, `Veh_Estop`, `Blinker_Ctrl`, `Headlight_Ctrl`, `TurnLeft/TurnRight/BackUp/Auto_Prompts`, `DoorCtrl`, `Rolling_Counter`, `Veh_Chksum` |
+- `ADS_VCU_MTR` — motor / gear setpoint
+- `ADS_VCU_BRK` — brake setpoint
+- `ADS_VCU_EPS` — steering setpoint
+- `ADS_VCU_VEHICLE` — auto-en / e-stop / blinker / headlight / rolling counter
 
 ### RX (VCU → ADS) — decoded into status state
 
-| ID    | Name             | Key signals |
-|-------|------------------|-------------|
-| 0x100 | `VCU_ADS_BRK`    | `Brake_State`, `Brake_Position` (%), `Brake_Stroke` (mm), `Brake_Pressure` (MPa) |
-| 0x101 | `VCU_ADS_MTR`    | `Motor_State`, `Throttle_Position` (%), `Gear_Position`, `Vehicle_Speed` (m/s, signed) |
-| 0x102 | `VCU_ADS_EPS`    | `EPS_State`, `Tire_Angle` (deg, signed) |
-| 0x103 | `VCU_ADS_VEHICLE`| `Driving_State`, `Estop`, `Blinker`, `Error_Code_Sys/Mtr/Eps/Brk` |
+- `VCU_ADS_MTR` — motor state, throttle, gear, vehicle speed
+- `VCU_ADS_BRK` — brake state, position, stroke, pressure
+- `VCU_ADS_EPS` — EPS state, tire angle
+- `VCU_ADS_VEHICLE` — driving state, e-stop, blinker, per-subsystem error codes
+
+Frame IDs, signal layouts, and scaling factors are defined by the Turing
+Drive CAN protocol (`CAX_ADS_CAN.dbc`). The DBC is proprietary and is not
+included in this repository — see [Building from source](#building-from-source)
+below.
 
 ### Outstanding
 
@@ -192,14 +193,34 @@ publisher conventions. Mismatched QoS would silently drop all messages.
   `VehicleEmergencyStamped` topic. Recovery requires a fresh `false`
   publish (stuck-on > stuck-off as fail-safe).
 
-## Build
+## Building from source
 
-`colcon-cargo-ros2`. Rust deps in `Cargo.toml`; ROS deps via `package.xml`.
-DBC codegen runs in `build.rs`.
+The Turing Drive CAN database (`CAX_ADS_CAN.dbc`) is **not** included in
+this repository — it is proprietary to the vendor. Codegen in `build.rs`
+needs it at build time.
 
-```
-just build
-```
+1. **Obtain `CAX_ADS_CAN.dbc` from Turing Drive.**
+2. Place the file via either path:
+   - **In-tree (default)**: drop it at
+     `src/vehicle/golfcart_vehicle_launch/golfcart_vehicle_interface/CAX_ADS_CAN.dbc`.
+     The path is gitignored, so your local copy stays out of commits.
+   - **Out-of-tree**: keep it anywhere and point at it:
+     ```
+     export CAX_ADS_DBC=/path/to/CAX_ADS_CAN.dbc
+     ```
+3. Build:
+   ```
+   just build
+   ```
+
+`build.rs` reads the DBC and emits two per-build artifacts into `OUT_DIR`:
+* `dbc_messages.rs` — typed `dbc-codegen` bindings
+* `dbc_limits.rs`   — physical-range bounds used to clamp setpoints
+
+Both are regenerated on every change to the DBC file or `build.rs`.
+
+If the file is missing, the build fails with a clear error pointing back
+to this section.
 
 ## Testing
 
