@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bench teleop launch: vehicle interface + Tk GUI controller.
+
+  Brings up `golfcart_vehicle_interface` (default tx_enabled:=false for safety,
+  override to true to actually drive) alongside the Tkinter teleop GUI so an
+  operator can stream control commands without Autoware running. Use against
+  `vcan0` for dry runs (`scripts/can/up-vcan0.sh`) or `can0` on the real bus.
+
+  GUI is a Tk window — it will pop up on the operator's display. Do NOT use
+  this launch over a headless SSH session unless X forwarding is set up; the
+  GUI process will fail at startup with `couldn't connect to display`.
+-->
+<launch>
+  <arg name="can_interface" default="vcan0" description="SocketCAN interface (vcan0 for bench, can0 for real bus)"/>
+  <arg name="tx_enabled" default="false" description="CAN TX master enable. Default false for safety; set true to actually drive."/>
+
+  <include file="$(find-pkg-share golfcart_vehicle_launch)/launch/vehicle_interface.launch.xml">
+    <arg name="can_interface" value="$(var can_interface)"/>
+    <arg name="tx_enabled" value="$(var tx_enabled)"/>
+  </include>
+
+  <node pkg="golfcart_vehicle_launch" exec="teleop_gui.py" name="golfcart_teleop_gui" output="screen"/>
+</launch>

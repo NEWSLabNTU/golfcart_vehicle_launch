@@ -14,6 +14,11 @@ find_package(ament_cmake_auto REQUIRED)
 
 ament_auto_find_build_dependencies()
 
+install(PROGRAMS
+  scripts/teleop_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_auto_package(INSTALL_TO_SHARE
   launch
   config
