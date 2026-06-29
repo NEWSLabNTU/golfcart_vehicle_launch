@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     };
     let gear_config = can_io::GearShiftConfig {
         change_margin: Duration::from_millis(params.gear_change_margin_ms),
-        brake_pressure_mpa: params.shift_brake_pressure_mpa,
+        brake_decel_mps2: params.shift_brake_decel_mps2,
         low_vel_thresh_mps: params.shift_low_vel_thresh_mps,
     };
     let can_threads = match can_io::spawn(

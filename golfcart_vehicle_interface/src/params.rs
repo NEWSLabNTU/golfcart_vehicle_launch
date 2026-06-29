@@ -46,9 +46,13 @@ pub struct Params {
     /// Minimum dwell time (ms) between gear-cmd changes on CAN. Suppresses
     /// chatter from a planner that flips gear request fast.
     pub gear_change_margin_ms: u64,
-    /// Brake pressure (MPa) commanded while a gear shift is queued at low
-    /// speed. Forces the vehicle to settle before the gearbox engages.
-    pub shift_brake_pressure_mpa: f32,
+    /// Brake deceleration (m/s²) commanded while a gear shift is queued at low
+    /// speed. Forces the vehicle to settle before the gearbox engages. ROOTS
+    /// brakes on `Ads_Vcu_Target_Deceleration` only (stroke/pressure are
+    /// ignored), and braking is segmented — values below 1.2 m/s² do not
+    /// actuate at all, so the default sits in segment 3 (≥2.8 ≈ full) to
+    /// guarantee the cart is firmly held during the shift.
+    pub shift_brake_decel_mps2: f32,
     /// |Speed| (m/s) below which gear shifts are allowed and brake-during-
     /// shift is asserted.
     pub shift_low_vel_thresh_mps: f32,
@@ -150,9 +154,9 @@ impl Params {
             .default(2000)
             .mandatory()?
             .get();
-        let shift_brake_pressure_mpa = node
-            .declare_parameter("shift_brake_pressure_mpa")
-            .default(0.7)
+        let shift_brake_decel_mps2 = node
+            .declare_parameter("shift_brake_decel_mps2")
+            .default(3.0)
             .mandatory()?
             .get();
         let shift_low_vel_thresh_mps = node
@@ -178,7 +182,7 @@ impl Params {
             steer_rate_nominal_rps: steer_rate_nominal_rps as f32,
             steer_low_vel_thresh_mps: steer_low_vel_thresh_mps as f32,
             gear_change_margin_ms: gear_change_margin_ms as u64,
-            shift_brake_pressure_mpa: shift_brake_pressure_mpa as f32,
+            shift_brake_decel_mps2: shift_brake_decel_mps2 as f32,
             shift_low_vel_thresh_mps: shift_low_vel_thresh_mps as f32,
         })
     }

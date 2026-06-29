@@ -48,12 +48,21 @@ flowchart TD
 
 ### Per-mode TX payload
 
-| Mode | motor_en | gear_en | brake_en | eps_en | veh_auto_en | brake_pressure | blinker |
+| Mode | motor_en | gear_en | brake_en | eps_en | veh_auto_en | brake (deceleration) | blinker |
 |---|---|---|---|---|---|---|---|
 | `Idle` | 0 | 0 | 0 | 0 | 0 | 0 | user |
 | `EngagedWaiting` | 0 | 0 | 0 | 0 | 1 | 0 | user |
-| `Driving` | 1 | 1 | 1 | 1 | 1 | 0 (via `target_decel`) | user |
-| `SafetyBrake` | 0 | 0 | 1 | 0 | 1 | 4.0 MPa | Hazard |
+| `Driving` | 1 † | 1 | 1 | 1 | 1 | `target_decel` | user |
+| `SafetyBrake` | 0 | 0 | 1 | 0 | 1 | 3.0 m/s² (+ `Veh_Estop`) | Hazard |
+
+ROOTS actuates braking from `Ads_Vcu_Target_Deceleration` only; stroke and
+pressure are ignored, so both are always sent as `0` (see
+[ROOTS DBW behaviour](#roots-dbw-behaviour)).
+
+† `motor_en` drops to `0` (with throttle / accel / speed zeroed) whenever a
+planner deceleration is active (`target_decel > 0`), matching the VCU's
+decel-priority torque cut. `gear_en` stays `1` so the requested gear is always
+known.
 
 ### Evaluation precedence
 
@@ -92,10 +101,64 @@ Drive CAN protocol (`CAX_ADS_CAN.dbc`). The DBC is proprietary and is not
 included in this repository — see [Building from source](#building-from-source)
 below.
 
-### Outstanding
+## ROOTS DBW behaviour
 
-- `Veh_Chksum` algorithm not provided by Turing Drive — currently transmits
-  `0` (`checksum_stub()` in `src/dbc.rs`). Replace once spec is available.
+Vendor-specific semantics from the **ROOTS Drive-by-Wire 使用說明** manual that
+the TX path is written against. These are ROOTS quirks, not generic DBC
+behaviour, and they constrain what command values are actually honoured.
+
+- **Braking is deceleration-only.** ROOTS acts solely on
+  `Ads_Vcu_Target_Deceleration` (`ADS_VCU_BRK`, `0x068`). `Target_Stroke` and
+  `Target_Pressure` are *not effective* and are always transmitted as `0`.
+- **Segmented brake.** Deceleration maps to discrete brake stages, not a linear
+  curve:
+
+  | Commanded deceleration | Brake output |
+  |---|---|
+  | `0.0 – 1.2 m/s²` | no actuation (coast) |
+  | `1.2 – 1.8 m/s²` | stage 1 (≈ 33 %) |
+  | `1.8 – 2.8 m/s²` | stage 2 (≈ 70 %) |
+  | `≥ 2.8 m/s²` | stage 3 (≈ 100 %) |
+
+- **Deceleration has priority over speed.** Once deceleration `> 0`, the VCU
+  cuts motor torque to protect the motor. The TX path mirrors this by zeroing
+  the motor frame while decelerating.
+- **Speed setpoint is `[0, 25] km/h`, magnitude only.** Direction is selected by
+  the gear, not the sign of `Ads_Vcu_Target_Speed`. Setpoints are clamped to a
+  non-negative magnitude (`ROOTS_MAX_SPEED_MPS = 6.944 m/s ≈ 25 km/h`).
+- **No Park gear.** A `Parking` command makes ROOTS apply maximum deceleration
+  to hold the vehicle; the speed command is then ignored. Use a safety brake /
+  e-stop to stop while moving — the gear-change gate only forwards `Parking` at
+  low speed.
+- **Tire angle range is `[-30, 30]°`** (`Ads_Vcu_Target_Tire_Angle`,
+  `ADS_VCU_EPS`, `0x065`). The default `max_tire_angle_rad` (≈ 20°) stays well
+  inside this.
+- **30 Hz rolling-counter gate.** The VCU monitors `Ads_Vcu_Rolling_Counter` in
+  `ADS_VCU_VEHICLE` (`0x43F`) and refuses autonomous mode if the rate falls far
+  below ~30 Hz. `tx_rate_hz` defaults to 100 Hz. (The manual's reference to
+  "msg ID 0x48" is the rolling-counter bit offset, 48, within `0x43F`.)
+- **CAN bus**: `can0`, 500 kbit/s, sample point 87.5 %, **standard** IDs (not
+  CAN FD). Bring the link up with `scripts/setup-physical-can.sh` (see the NAS
+  VCU-manual folder for the vendor copy).
+
+## Known limitations
+
+Tracked gaps against the vendor manual. See `CHANGELOG.md` for what has already
+been aligned.
+
+- **Checksum is stubbed.** `Veh_Chksum` (and the other `*_Chksum` fields)
+  algorithm is not provided by Turing Drive — every TX frame currently transmits
+  `0` (`checksum_stub()` in `src/dbc.rs`). If the VCU validates the checksum,
+  frames will be rejected and the vehicle will not move. **Blocker for
+  real-vehicle bring-up; confirm with the vendor whether the field is enforced.**
+- **Segmented-brake dead-zone not remapped.** Deceleration requests below
+  `1.2 m/s²` produce no braking on ROOTS, so gentle planner stops coast. The
+  interface passes the value through unchanged; biasing low requests into the
+  active band (or documenting the coast as intentional) is an open tuning
+  decision.
+- **`can0` setup script** does not set the 87.5 % sample point explicitly
+  (`scripts/setup-physical-can.sh`). Acceptable on most controllers that default
+  to a compatible sample point, but worth pinning to match the vendor spec.
 
 ## Domain enums (mapped from DBC `VAL_` tables)
 
@@ -156,7 +219,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `frame_id` | string | `base_link` | `frame_id` written into VelocityReport.header. |
 | `control_timeout_ms` | i64 | 500 | Max age of a Control msg before TX trips into `SafetyBrake`. |
 | `report_timeout_ms` | i64 | 1000 | Max age of a VCU_ADS_VEHICLE frame before status counts as stale. |
-| `max_speed_mps` | f64 | 5.0 | Cap on signed speed setpoint magnitude. |
+| `max_speed_mps` | f64 | 5.0 | Cap on speed setpoint magnitude. Effective cap is `min(max_speed_mps, 6.944)` — ROOTS tops out at 25 km/h. Direction is set by the gear; the setpoint is always non-negative. |
 | `max_accel_mps2` | f64 | 2.0 | Cap on forward accel setpoint. |
 | `max_decel_mps2` | f64 | 4.0 | Cap on brake decel setpoint. |
 | `max_tire_angle_rad` | f64 | 0.349 | Cap on tire-angle setpoint magnitude (≈20°). |
@@ -165,7 +228,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `steer_rate_nominal_rps` | f64 | 0.8 | Slew rate at nominal speed. |
 | `steer_low_vel_thresh_mps` | f64 | 1.0 | Speed boundary between low and nominal slew. |
 | `gear_change_margin_ms` | i64 | 2000 | Min dwell between accepted gear changes (anti-chatter). |
-| `shift_brake_pressure_mpa` | f64 | 0.7 | Brake pressure asserted while a shift is pending at low speed. |
+| `shift_brake_decel_mps2` | f64 | 3.0 | Brake deceleration asserted while a shift is pending at low speed (ROOTS honours deceleration, not pressure; default sits in brake stage 3). |
 | `shift_low_vel_thresh_mps` | f64 | 0.1 | \|v\| below which gear shifts are allowed and brake-during-shift asserted. |
 
 ## Failure modes handled
@@ -183,12 +246,13 @@ publisher conventions. Mismatched QoS would silently drop all messages.
   socket reopen every 50 ticks.
 - CAN socket bounce: RX/TX threads reopen socket on persistent error
   (cable yank, USB-CAN reset).
-- Setpoint sanitization: clamp on subscriber side to `(±max_*, DBC range)`
-  so encode never panics.
+- Setpoint sanitization: clamp on subscriber side to the user-policy caps and
+  the DBC signal range so encode never panics. Speed is clamped to a
+  non-negative magnitude capped at the ROOTS 25 km/h ceiling.
 - Steering slew limit: per-tick rate cap with stopped / low-vel / nominal
   buckets; falls back to stopped rate when MTR is stale.
-- Gear anti-chatter: `gear_change_margin_ms` dwell; brake assertion during
-  pending shift at low speed.
+- Gear anti-chatter: `gear_change_margin_ms` dwell; deceleration brake
+  (`shift_brake_decel_mps2`) asserted during pending shift at low speed.
 - Driver e-stop: `cmd.estop` latched on either Bool or
   `VehicleEmergencyStamped` topic. Recovery requires a fresh `false`
   publish (stuck-on > stuck-off as fail-safe).

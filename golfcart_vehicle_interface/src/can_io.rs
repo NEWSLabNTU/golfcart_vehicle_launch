@@ -25,10 +25,13 @@ use crate::state::{CommandState, SharedState};
 
 const NODE_NAME: &str = "golfcart_vehicle_interface";
 
-/// Brake pressure (MPa) commanded during safety-brake (Autoware silent past the
-/// control-watchdog window, ECU fault, or driver e-stop). Picked moderate so
-/// the cart stops without an axle-jolting lockup; DBC max is 12.75.
-const SAFETY_BRAKE_PRESSURE_MPA: f32 = 4.0;
+/// Brake deceleration (m/s²) commanded during safety-brake (Autoware silent
+/// past the control-watchdog window, ECU fault, or driver e-stop). ROOTS brakes
+/// on `Ads_Vcu_Target_Deceleration` only — stroke/pressure are ignored — and
+/// the deceleration is segmented: <1.2 no brake, 1.2–1.8 ~33%, 1.8–2.8 ~70%,
+/// ≥2.8 ~100%. We sit in segment 3 for a firm, definite stop. The vehicle-frame
+/// `Ads_Vcu_Veh_Estop` bit is also asserted as a redundant max-decel path.
+const SAFETY_BRAKE_DECEL_MPS2: f32 = 3.0;
 
 pub struct CanThreads {
     pub rx: JoinHandle<()>,
@@ -48,11 +51,12 @@ pub struct SteerLimits {
 
 /// Gear-shift policy. `change_margin` debounces gear_cmd; while a shift is
 /// pending and the cart is below `low_vel_thresh_mps`, the brake is asserted
-/// at `brake_pressure_mpa` so the gearbox engages cleanly.
+/// at `brake_decel_mps2` (ROOTS honours deceleration, not pressure) so the
+/// gearbox engages cleanly.
 #[derive(Debug, Clone, Copy)]
 pub struct GearShiftConfig {
     pub change_margin: Duration,
-    pub brake_pressure_mpa: f32,
+    pub brake_decel_mps2: f32,
     pub low_vel_thresh_mps: f32,
 }
 
@@ -390,7 +394,7 @@ fn tx_loop(
             limited_tire_rad,
             actual_gear,
             if shift_brake {
-                Some(gear_config.brake_pressure_mpa)
+                Some(gear_config.brake_decel_mps2)
             } else {
                 None
             },
@@ -529,41 +533,45 @@ fn build_frames(
     rolling: u8,
     slew_limited_tire_rad: f32,
     actual_gear: Gear,
-    shift_brake_pressure_mpa: Option<f32>,
+    shift_brake_decel_mps2: Option<f32>,
 ) -> [(u32, [u8; 8]); 4] {
     let chksum = checksum_stub();
     let driving = mode == TxMode::Driving;
     let safety_brake = mode == TxMode::SafetyBrake;
     let authority = mode.claims_authority();
-    let shift_braking = shift_brake_pressure_mpa.is_some();
+    let shift_braking = shift_brake_decel_mps2.is_some();
 
-    // Motor: only enable when actually driving on planner setpoints. Zero
-    // throttle while shift-braking so the gear can engage cleanly.
+    // Manual: once Ads_Vcu_Target_Deceleration > 0 the VCU cuts motor torque
+    // (deceleration takes priority over speed) to protect the motor. Mirror
+    // that here so motor and brake never fight on the bus — drop the motor
+    // whenever we are actively decelerating on the planner's command.
+    let decel_active = driving && cmd.target_deceleration_mps2 > 0.0;
+    // Motor: only drive when on fresh planner setpoints, not shift-braking, and
+    // not decelerating. Gear-enable stays on while driving so the VCU always
+    // knows the requested gear even when torque is cut.
+    let motor_active = driving && !shift_braking && !decel_active;
     let motor = AdsVcuMtr::new(
-        driving,
+        motor_active,
         driving,
         cmd.motor_mode.as_bool(),
         actual_gear.to_raw(),
-        if driving && !shift_braking { cmd.target_throttle_pct } else { 0.0 },
-        if driving && !shift_braking {
-            cmd.target_acceleration_mps2.max(0.0)
-        } else {
-            0.0
-        },
-        if driving && !shift_braking { cmd.target_speed_mps } else { 0.0 },
+        if motor_active { cmd.target_throttle_pct } else { 0.0 },
+        if motor_active { cmd.target_acceleration_mps2.max(0.0) } else { 0.0 },
+        if motor_active { cmd.target_speed_mps } else { 0.0 },
         chksum,
     )
     .expect("AdsVcuMtr fields are clamped at the call site");
 
     // Brake: enable while driving (so Autoware can brake), in safety-brake
     // (planner failure / fault), and while a gear shift is pending at low
-    // speed (settle the gearbox before engaging).
-    let (brake_pressure, brake_decel) = match (mode, shift_brake_pressure_mpa) {
-        (TxMode::SafetyBrake, _) => (SAFETY_BRAKE_PRESSURE_MPA, 0.0),
-        (TxMode::Driving, Some(p)) => (p, 0.0),
-        (TxMode::Driving, None) => (0.0, cmd.target_deceleration_mps2),
-        (_, Some(p)) => (p, 0.0),
-        _ => (0.0, 0.0),
+    // speed (settle the gearbox before engaging). ROOTS acts only on
+    // `Ads_Vcu_Target_Deceleration`; stroke/pressure are ignored, so we send 0
+    // for both and pick the deceleration setpoint per mode.
+    let brake_decel = match (mode, shift_brake_decel_mps2) {
+        (TxMode::SafetyBrake, _) => SAFETY_BRAKE_DECEL_MPS2,
+        (_, Some(d)) => d,
+        (TxMode::Driving, None) => cmd.target_deceleration_mps2,
+        _ => 0.0,
     };
     let brake_mode = if safety_brake || shift_braking {
         BrakeMode::Pressure
@@ -573,8 +581,8 @@ fn build_frames(
     let brake = AdsVcuBrk::new(
         driving || safety_brake || shift_braking,
         brake_mode.to_raw(),
-        0.0,
-        brake_pressure,
+        0.0, // stroke — ignored by ROOTS
+        0.0, // pressure — ignored by ROOTS
         brake_decel,
         0,
         chksum,

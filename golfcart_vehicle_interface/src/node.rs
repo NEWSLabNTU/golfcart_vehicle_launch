@@ -19,13 +19,18 @@ use std::time::{Duration, Instant};
 
 use crate::dbc::{
     BlinkerCtrl, BrakeMode, EpsMode, Gear, MotorMode, SubsystemState, ACCEL_MPS2_MAX,
-    ACCEL_MPS2_MIN, DECEL_MPS2_MAX, DECEL_MPS2_MIN, SPEED_MPS_MAX, SPEED_MPS_MIN,
+    ACCEL_MPS2_MIN, DECEL_MPS2_MAX, DECEL_MPS2_MIN, SPEED_MPS_MAX,
     TIRE_ANGLE_DEG_MAX, TIRE_ANGLE_DEG_MIN,
 };
 use crate::params::Params;
 use crate::state::SharedState;
 
 const NODE_NAME: &str = "golfcart_vehicle_interface";
+
+/// ROOTS `Ads_Vcu_Target_Speed` is specified for [0, 25] km/h. Direction is
+/// selected by the gear, not the sign of this signal, so the speed setpoint is
+/// always a non-negative magnitude capped at this ceiling (25 km/h ≈ 6.944 m/s).
+const ROOTS_MAX_SPEED_MPS: f32 = 6.944;
 
 #[allow(dead_code)] // Held to keep ROS entities alive for the node's lifetime.
 pub struct VehicleInterfaceNode {
@@ -73,8 +78,12 @@ impl VehicleInterfaceNode {
                 // commissioning, mechanical EPS limits), then clamp to DBC
                 // ranges so the encode call never errors. Out-of-range setpoints
                 // would otherwise tear down the vehicle interface mid-drive.
-                let speed_user = clamp_f32(msg.longitudinal.velocity as f32, -max_speed, max_speed);
-                let speed = clamp_f32(speed_user, SPEED_MPS_MIN, SPEED_MPS_MAX);
+                // ROOTS target speed is a magnitude in [0, 25] km/h; direction
+                // comes from the gear, not the sign. Take |velocity|, then clamp
+                // to the user-policy cap, the ROOTS 25 km/h ceiling, and finally
+                // the DBC signal max so the encode call never errors.
+                let speed_cap = max_speed.min(ROOTS_MAX_SPEED_MPS).min(SPEED_MPS_MAX);
+                let speed = clamp_f32((msg.longitudinal.velocity as f32).abs(), 0.0, speed_cap);
 
                 let accel_signed = msg.longitudinal.acceleration as f32;
                 let accel_user = clamp_f32(accel_signed.max(0.0), 0.0, max_accel);
