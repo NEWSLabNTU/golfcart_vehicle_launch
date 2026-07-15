@@ -41,6 +41,14 @@ deceleration is commanded).
 
 ### Fixed
 
+- **Build against the current vendor DBC revision** (`Roots_can_test` drop,
+  2026-07). The vendor renamed all messages with bus-direction prefixes
+  (`RX_ADS_VCU_*` / `TX_VCU_ADS_*`, from the VCU's point of view), which made
+  `dbc-codegen` emit `RxAdsVcu*` / `TxVcuAds*` types and broke the build.
+  `build.rs` now strips the prefixes from `BO_` lines before codegen so the
+  crate keeps its `AdsVcu*` / `VcuAds*` type names. Encoded frames verified
+  byte-exact against a `cantools` encode of the same vendor DBC for all four
+  TX messages.
 - **Motor torque is cut while decelerating.** When a planner deceleration is
   active (`target_deceleration_mps2 > 0` while driving), the motor enable,
   throttle, acceleration, and speed fields are all zeroed so the motor and brake

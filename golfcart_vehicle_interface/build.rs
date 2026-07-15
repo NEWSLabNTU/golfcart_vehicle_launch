@@ -36,6 +36,24 @@ fn main() -> Result<()> {
         1,
     );
 
+    // Newer vendor DBC revisions prefix message names with the bus direction
+    // (`RX_ADS_VCU_*` / `TX_VCU_ADS_*`, from the VCU's point of view). Strip
+    // the prefixes so codegen keeps emitting the `AdsVcu*` / `VcuAds*` type
+    // names the rest of the crate is written against. Only `BO_` lines carry
+    // message names — CM_/VAL_/SG_ reference messages by numeric ID.
+    dbc = dbc
+        .lines()
+        .map(|line| {
+            if line.starts_with("BO_ ") {
+                line.replacen(" RX_ADS_VCU_", " ADS_VCU_", 1)
+                    .replacen(" TX_VCU_ADS_", " VCU_ADS_", 1)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let mut buf: Vec<u8> = Vec::new();
     dbc_codegen::codegen(
         dbc_path.file_name().unwrap_or_default().to_string_lossy().as_ref(),
