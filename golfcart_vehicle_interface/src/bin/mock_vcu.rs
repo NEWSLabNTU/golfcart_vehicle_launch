@@ -19,8 +19,17 @@
 //!   --drop-eps              Skip transmitting VCU_ADS_EPS
 //!   --drop-brk              Skip transmitting VCU_ADS_BRK
 //!   --drop-veh              Skip transmitting VCU_ADS_VEHICLE
-//!   --manual                Report Driving_State = Manual (instead of Autonomous)
+//!   --auto                  Driver has switched the vehicle to autonomous:
+//!                           report Autonomous on all four subsystem states
+//!   --manual                Report Manual on all four states (the default)
+//!   --brk-invalid           Report Brake_State = Invalid, leaving the other
+//!                           three as-is (reproduces the post-restart mix that
+//!                           the interface must treat as abnormal)
 //!   --help                  Print usage and exit
+//!
+//! Mode transitions belong to the driver, so `--auto` models the physical
+//! switch: the interface only commands once all four states read Autonomous,
+//! and it never asks for that itself.
 //!
 //! Sharing the dbc-codegen output with the production binary is done by
 //! including `../dbc.rs` directly — that file has the `include!()` macro
@@ -59,7 +68,12 @@ struct Config {
     drop_eps: bool,
     drop_brk: bool,
     drop_veh: bool,
+    /// Driver has handed the vehicle over: all four subsystem states report
+    /// Autonomous. Default is Manual, which is what the real VCU reports until
+    /// someone flips the switch.
+    auto: bool,
     manual: bool,
+    brk_invalid: bool,
 }
 
 impl Default for Config {
@@ -76,7 +90,9 @@ impl Default for Config {
             drop_eps: false,
             drop_brk: false,
             drop_veh: false,
+            auto: false,
             manual: false,
+            brk_invalid: false,
         }
     }
 }
@@ -149,7 +165,9 @@ fn parse_args() -> Result<Config> {
             "--drop-eps" => cfg.drop_eps = true,
             "--drop-brk" => cfg.drop_brk = true,
             "--drop-veh" => cfg.drop_veh = true,
+            "--auto" => cfg.auto = true,
             "--manual" => cfg.manual = true,
+            "--brk-invalid" => cfg.brk_invalid = true,
             other => {
                 anyhow::bail!("unknown arg '{other}' (try --help)");
             }
@@ -176,7 +194,9 @@ Usage: mock_vcu [OPTIONS]
   --drop-eps              Skip transmitting VCU_ADS_EPS
   --drop-brk              Skip transmitting VCU_ADS_BRK
   --drop-veh              Skip transmitting VCU_ADS_VEHICLE
-  --manual                Report Driving_State = Manual
+  --auto                  Report Autonomous on all four subsystem states
+  --manual                Report Manual on all four states (default)
+  --brk-invalid           Report Brake_State = Invalid (abnormal mix)
   --help                  Print this help"
     );
 }
@@ -248,8 +268,11 @@ fn send_frame(socket: &CanSocket, id: u32, payload: &[u8; 8]) -> std::io::Result
 fn main() -> Result<()> {
     let cfg = parse_args()?;
     println!(
-        "[mock_vcu] iface={} rate={}Hz estop={} drop=(mtr={},eps={},brk={},veh={})",
-        cfg.interface, cfg.rate_hz, cfg.estop,
+        "[mock_vcu] iface={} rate={}Hz state={} estop={} drop=(mtr={},eps={},brk={},veh={})",
+        cfg.interface,
+        cfg.rate_hz,
+        if cfg.auto && !cfg.manual { "Autonomous" } else { "Manual" },
+        cfg.estop,
         cfg.drop_mtr, cfg.drop_eps, cfg.drop_brk, cfg.drop_veh
     );
 
@@ -281,8 +304,8 @@ fn main() -> Result<()> {
         // Snapshot + integrate.
         let snapshot = {
             let mut w = world.lock();
-            // Speed integration only when motor enabled and auto active —
-            // otherwise the cart coasts toward zero.
+            // Speed integration only when motor enabled and the ADS claims
+            // authority — otherwise the cart coasts toward zero.
             let target_speed = if w.motor_en && w.auto_en {
                 w.target_speed_mps
             } else {
@@ -299,14 +322,13 @@ fn main() -> Result<()> {
             *w
         };
 
+        // The driver owns mode transitions, so the reported state does not
+        // depend on what the ADS asks for: --auto is the switch being thrown.
+        // 0=Invalid, 1=Manual, 2=Autonomous.
+        let reported_state: u8 = if cfg.auto && !cfg.manual { 2 } else { 1 };
+
         if !cfg.drop_mtr {
-            let driving_state: u8 = if cfg.manual {
-                1
-            } else if snapshot.auto_en {
-                2
-            } else {
-                1
-            };
+            let driving_state: u8 = reported_state;
             let gear_raw = snapshot.target_gear;
             let throttle_pct: u8 = ((snapshot.speed_mps.abs() / 5.0) * 100.0)
                 .clamp(0.0, 255.0) as u8;
@@ -316,7 +338,7 @@ fn main() -> Result<()> {
         }
 
         if !cfg.drop_eps {
-            let eps_state: u8 = if snapshot.eps_en { 1 } else { 0 };
+            let eps_state: u8 = reported_state;
             let eps = VcuAdsEps::new(eps_state, snapshot.tire_deg, 0.0)
                 .expect("EPS fields in range");
             let _ = send_frame(&tx_socket, VcuAdsEps::MESSAGE_ID, eps.raw());
@@ -326,19 +348,16 @@ fn main() -> Result<()> {
             // Echo the commanded pressure so the diag pipeline sees a
             // reasonable feedback signal; brake position/stroke aren't
             // modelled.
-            let brk = VcuAdsBrk::new(0, 0, 0, snapshot.target_brake_pressure)
+            // --brk-invalid keeps BRK out of step with the other three, the
+            // post-restart condition the interface must call abnormal.
+            let brk_state: u8 = if cfg.brk_invalid { 0 } else { reported_state };
+            let brk = VcuAdsBrk::new(brk_state, 0, 0, snapshot.target_brake_pressure)
                 .expect("BRK fields in range");
             let _ = send_frame(&tx_socket, VcuAdsBrk::MESSAGE_ID, brk.raw());
         }
 
         if !cfg.drop_veh {
-            let driving_state: u8 = if cfg.manual {
-                1
-            } else if snapshot.auto_en {
-                2
-            } else {
-                1
-            };
+            let driving_state: u8 = reported_state;
             let veh = VcuAdsVehicle::new(
                 snapshot.rolling_counter,
                 driving_state,

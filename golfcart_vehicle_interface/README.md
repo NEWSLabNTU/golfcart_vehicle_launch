@@ -28,6 +28,31 @@ Two native threads on top of the ROS executor; coordination via
 `Arc<SharedState>` containing two `parking_lot::Mutex` (one per direction,
 lock-ordering `command` → `status`).
 
+## Control mode — the driver's, not ours
+
+Every mode transition is made by the driver on the vehicle's own controls.
+This node never requests one; it reads back the four subsystem states the VCU
+reports and aggregates them:
+
+| `MTR` (`Motor_State`) | `BRK` (`Brake_State`) | `EPS` (`EPS_State`) | `Drv` (`Driving_State`) | aggregate `VehicleMode` |
+|---|---|---|---|---|
+| Manual | Manual | Manual | Manual | `Manual` |
+| Autonomous | Autonomous | Autonomous | Autonomous | `Autonomous` |
+| anything else — mixed, `Invalid`, `Remote Control`, or a stale/missing frame | | | | `Abnormal` |
+
+**Commands go on the wire only in `Autonomous`.** In `Manual` and `Abnormal`
+the four `ADS_VCU_*` frames are still transmitted, but as pure heartbeat: all
+enables `0`, all setpoints `0`, no `Veh_Auto_En`, no `Veh_Estop`, no light
+commands. That heartbeat is what lifts `MTR` and `EPS` out of `Invalid` on the
+VCU side after a restart without commanding anything.
+
+A frame older than `report_timeout_ms` counts as missing — a cached state from
+a VCU that has gone quiet says nothing about who holds the vehicle now.
+
+`Abnormal` is also the state a partial handover passes through, and the one a
+VCU restart lands in (`BRK` and `Drv` come up `Invalid` until a brake-pedal
+press; see `docs/roadmaps/2-vehicle-interface-testing.md`).
+
 ## TX FSM
 
 The TX thread evaluates a four-state machine every tick to decide what to
@@ -37,20 +62,20 @@ put on the wire.
 %%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart TD
     Start([ start ]) --> Idle
-    Idle -->|"service AUTONOMOUS<br/>(no fault)"| EngagedWaiting
+    Idle -->|"driver switches vehicle to auto<br/>(all four states Autonomous)"| EngagedWaiting
     EngagedWaiting -->|"first Control msg arrives"| Driving
-    EngagedWaiting -->|"service MANUAL / NO_COMMAND"| Idle
+    EngagedWaiting -->|"driver takes the vehicle back<br/>OR any state disagrees"| Idle
     EngagedWaiting -->|"ECU fault / driver e-stop"| SafetyBrake
     Driving -->|"Control stale > control_timeout_ms<br/>OR ECU hazard<br/>OR driver e-stop<br/>OR persistent CAN TX failure"| SafetyBrake
-    Driving -->|"service MANUAL / NO_COMMAND"| Idle
-    SafetyBrake -->|"service MANUAL / NO_COMMAND<br/>(clears fault_latched)"| Idle
+    Driving -->|"driver takes the vehicle back<br/>OR any state disagrees"| Idle
+    SafetyBrake -->|"driver takes the vehicle back<br/>OR any state disagrees"| Idle
 ```
 
 ### Per-mode TX payload
 
 | Mode | motor_en | gear_en | brake_en | eps_en | veh_auto_en | brake (deceleration) | blinker |
 |---|---|---|---|---|---|---|---|
-| `Idle` | 0 | 0 | 0 | 0 | 0 | 0 | user |
+| `Idle` | 0 | 0 | 0 | 0 | 0 | 0 | off |
 | `EngagedWaiting` | 0 | 0 | 0 | 0 | 1 | 0 | user |
 | `Driving` | 1 † | 1 | 1 | 1 | 1 | `target_decel` | user |
 | `SafetyBrake` | 0 | 0 | 1 | 0 | 1 | 3.0 m/s² (+ `Veh_Estop`) | Hazard |
@@ -68,14 +93,20 @@ known.
 
 Checked in `TxMode::evaluate`, first match wins:
 
-1. `fault_latched || estop` → `SafetyBrake`
-2. `auto_enabled && was_driving && stale` → `SafetyBrake`
-3. `auto_enabled && !stale` → `Driving`
-4. `auto_enabled` → `EngagedWaiting`
-5. else → `Idle`
+1. `vehicle_mode != Autonomous` → `Idle` (mode gate — nothing else is consulted)
+2. `fault_latched || estop` → `SafetyBrake`
+3. `was_driving && stale` → `SafetyBrake`
+4. `!stale` → `Driving`
+5. else → `EngagedWaiting`
 
-`stale` = no Control message for `control_timeout_ms`; `was_driving` = at
-least one Control was received since the most recent engage.
+`stale` = no Control message for `control_timeout_ms`; `was_driving` = at least
+one Control was received since the vehicle last entered `Autonomous` (the
+timestamp is cleared on that transition, so a handover never starts in
+`SafetyBrake`).
+
+Note the mode gate outranks the e-stop: a driver e-stop or latched fault while
+the vehicle is in manual leaves us silent rather than braking behind the
+driver's back — their own pedal is the authority there.
 
 ## CAN message overview
 
@@ -192,7 +223,7 @@ remaps to Autoware-standard names.
 | `/vehicle/status/velocity_status` | `autoware_vehicle_msgs/VelocityReport` | From `VCU_ADS_MTR.Vehicle_Speed`. |
 | `/vehicle/status/steering_status` | `autoware_vehicle_msgs/SteeringReport` | From `VCU_ADS_EPS.Tire_Angle`. |
 | `/vehicle/status/gear_status` | `autoware_vehicle_msgs/GearReport` | From `VCU_ADS_MTR.Gear_Position`. |
-| `/vehicle/status/control_mode` | `autoware_vehicle_msgs/ControlModeReport` | Driven by local intent (fault_latched / auto_enabled / VCU subsystem state). |
+| `/vehicle/status/control_mode` | `autoware_vehicle_msgs/ControlModeReport` | Aggregate of the four VCU subsystem states: all-auto → `AUTONOMOUS`, all-manual → `MANUAL`, otherwise `NOT_READY`. A latched fault overrides to `DISENGAGED`. |
 | `/vehicle/status/turn_indicators_status` | `autoware_vehicle_msgs/TurnIndicatorsReport` | From `VCU_ADS_VEHICLE.Blinker`. |
 | `/vehicle/status/hazard_lights_status` | `autoware_vehicle_msgs/HazardLightsReport` | From `VCU_ADS_VEHICLE.Blinker`. |
 | `/vehicle/status/actuation_status` | `tier4_vehicle_msgs/ActuationStatusStamped` | Throttle / brake / steer feedback. |
@@ -202,7 +233,7 @@ remaps to Autoware-standard names.
 
 | Topic (after remap) | Type | Purpose |
 |---|---|---|
-| `/control/control_mode_request` | `autoware_vehicle_msgs/ControlModeCommand` | `AUTONOMOUS` engages; `MANUAL` / `NO_COMMAND` disengages and clears `fault_latched`. `AUTONOMOUS_STEER_ONLY` / `AUTONOMOUS_VELOCITY_ONLY` rejected (not implemented). |
+| `/control/control_mode_request` | `autoware_vehicle_msgs/ControlModeCommand` | `AUTONOMOUS` cannot engage anything — the driver does that on the vehicle — so it is an acknowledgement only: `success=true` iff the VCU already reports all four subsystems autonomous and no fault is latched. `MANUAL` / `NO_COMMAND` clears `fault_latched` and zeroes held setpoints. `AUTONOMOUS_STEER_ONLY` / `AUTONOMOUS_VELOCITY_ONLY` rejected (not implemented). |
 
 ### QoS
 
@@ -239,8 +270,16 @@ publisher conventions. Mismatched QoS would silently drop all messages.
   diag STALE; per-frame `frame_{mtr,eps,brk}` STALE entries.
 - ECU hazard latch: any of `Estop` / `Error_Code_*` bits → `fault_latched=true`,
   cleared only by explicit `MANUAL` / `NO_COMMAND` request.
-- Driver-override detection: `Vcu_Ads_Driving_State == Manual` while we claim
-  auto → disengage + log.
+- Driver override: any subsystem the driver switches back to `Manual` breaks
+  the all-four-`Autonomous` unanimity, so the mode gate stops commanding on the
+  next tick — no separate detection path, and it cannot be missed by watching
+  only one signal.
+- Parking pin: while the transmitted gear is `P`, target speed and tire angle
+  are forced to `0` and `motor_en` / `eps_en` are dropped, re-applied on every
+  frame built (mirrors the ROOTS bench simulator's rule).
+- Non-negative speed: `Ads_Vcu_Target_Speed` is a magnitude — reverse is gear
+  `R` — so it is clamped at `0` both on the subscriber side and again per
+  frame; `NaN` folds to `0`.
 - Persistent CAN TX failure: `≥ 25` consecutive failed ticks → set
   `fault_latched`, surface `vehicle_interface/can_tx` ERROR diag, attempt
   socket reopen every 50 ticks.

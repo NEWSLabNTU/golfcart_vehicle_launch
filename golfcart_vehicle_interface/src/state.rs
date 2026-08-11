@@ -1,20 +1,36 @@
 //! Shared state between ROS callbacks and the CAN I/O threads.
 
 use parking_lot::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::dbc::{
-    BlinkerCtrl, BrakeMode, EpsMode, Gear, MotorMode, VcuAdsBrk, VcuAdsEps, VcuAdsMtr,
-    VcuAdsVehicle,
+    BlinkerCtrl, BrakeMode, EpsMode, Gear, MotorMode, SubsystemState, VcuAdsBrk, VcuAdsEps,
+    VcuAdsMtr, VcuAdsVehicle,
 };
+
+/// Aggregate control mode of the vehicle, derived from the four subsystem
+/// states the VCU reports (`VCU_ADS_MTR.Motor_State`, `VCU_ADS_BRK.Brake_State`,
+/// `VCU_ADS_EPS.EPS_State`, `VCU_ADS_VEHICLE.Driving_State`).
+///
+/// The driver — not this node — performs every mode transition, on the
+/// vehicle's own controls. We only observe the result: all four subsystems
+/// agreeing is the only state either side of the handover is well defined in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VehicleMode {
+    /// All four subsystems report `Manual`: the driver has the vehicle.
+    Manual,
+    /// All four subsystems report `Autonomous`: the ADS may command.
+    Autonomous,
+    /// Anything else — mixed states, any `Invalid` / `Remote Control`, or a
+    /// missing/stale report frame. No commands are transmitted.
+    #[default]
+    Abnormal,
+}
 
 /// Latest commands written by ROS subscribers/services. The TX thread reads
 /// this on every period and packs the four ADS_VCU_* frames.
 #[derive(Debug, Clone, Copy)]
 pub struct CommandState {
-    // Motor / brake / EPS enables follow the autonomous-mode toggle.
-    pub auto_enabled: bool,
-
     pub motor_mode: MotorMode,
     pub gear: Gear,
     pub target_speed_mps: f32,
@@ -40,9 +56,9 @@ pub struct CommandState {
     pub estop: bool,
     /// Sticky latch raised when the ECU reports any hazard
     /// (`Vcu_Ads_Estop` or any of the four `Vcu_Ads_Error_Code_*` bits).
-    /// While set, the TX loop disengages and commands a safety brake; the
-    /// engage service rejects mode=AUTONOMOUS until the user sends a
-    /// MANUAL/NO_COMMAND request to clear it.
+    /// While set, the TX loop commands a safety brake (as long as the vehicle
+    /// is in `Autonomous`) and the control-mode report reads `DISENGAGED`,
+    /// until the user sends a MANUAL/NO_COMMAND request to clear it.
     pub fault_latched: bool,
     /// Last time a Control message was received. Commands are only sent while
     /// recent — protects the vehicle from a stalled planner.
@@ -69,7 +85,6 @@ pub struct CommandState {
 impl Default for CommandState {
     fn default() -> Self {
         Self {
-            auto_enabled: false,
             motor_mode: MotorMode::Speed,
             gear: Gear::Parking,
             target_speed_mps: 0.0,
@@ -117,6 +132,45 @@ pub struct StatusState {
     /// payload that fails range checks). Surfaced in diagnostics so a
     /// transceiver dumping noise is distinguishable from a silent VCU.
     pub bad_frames: u64,
+}
+
+impl StatusState {
+    /// The four reported subsystem states, in `[MTR, BRK, EPS, Drv]` order.
+    /// A frame that is missing or older than `report_timeout` yields `None` —
+    /// a cached state from a VCU that has gone quiet says nothing about who
+    /// holds the vehicle right now.
+    pub fn subsystem_states(&self, report_timeout: Duration) -> [Option<SubsystemState>; 4] {
+        let fresh = |at: Option<Instant>| at.map_or(false, |t| t.elapsed() <= report_timeout);
+        [
+            self.mtr
+                .filter(|_| fresh(self.mtr_at))
+                .map(|m| SubsystemState::from_raw(m.vcu_ads_motor_state_raw())),
+            self.brk
+                .filter(|_| fresh(self.brk_at))
+                .map(|b| SubsystemState::from_raw(b.vcu_ads_brake_state_raw())),
+            self.eps
+                .filter(|_| fresh(self.eps_at))
+                .map(|e| SubsystemState::from_raw(e.vcu_ads_eps_state_raw())),
+            self.veh
+                .filter(|_| fresh(self.veh_at))
+                .map(|v| SubsystemState::from_raw(v.vcu_ads_driving_state_raw())),
+        ]
+    }
+
+    /// Aggregate the four subsystem states into the vehicle's control mode.
+    /// Unanimity is required in both directions; everything else — including
+    /// a single stale frame — is `Abnormal`, which blocks all commanding.
+    pub fn vehicle_mode(&self, report_timeout: Duration) -> VehicleMode {
+        let states = self.subsystem_states(report_timeout);
+        let all = |want: SubsystemState| states.iter().all(|s| *s == Some(want));
+        if all(SubsystemState::Autonomous) {
+            VehicleMode::Autonomous
+        } else if all(SubsystemState::Manual) {
+            VehicleMode::Manual
+        } else {
+            VehicleMode::Abnormal
+        }
+    }
 }
 
 /// Rolling-buffer frequency tracker for one CAN frame ID. Holds up to
@@ -180,7 +234,8 @@ impl FreqWindow {
 ///
 /// All paths that need both must acquire `command` before `status`. Paths that
 /// need only one are unconstrained. Current callers:
-///   * `can_io::tx_loop`            — `command` only
+///   * `can_io::tx_loop`            — `status` (mode + speed) and `command`
+///     via separate temporary locks, never nested
 ///   * `can_io::rx_loop`            — `status` only (write per frame)
 ///   * `can_io::handle_vehicle_status` — `command` only (after `status`
 ///     guard already released)
@@ -198,4 +253,91 @@ impl FreqWindow {
 pub struct SharedState {
     pub command: Mutex<CommandState>,
     pub status: Mutex<StatusState>,
+}
+
+#[cfg(test)]
+mod vehicle_mode_tests {
+    use super::*;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_millis(1000);
+    const MANUAL: u8 = 1;
+    const AUTO: u8 = 2;
+    const INVALID: u8 = 0;
+
+    /// Build a status where every frame arrived just now with the given
+    /// subsystem states `[mtr, brk, eps, drv]`.
+    fn status(states: [u8; 4]) -> StatusState {
+        let now = Instant::now();
+        StatusState {
+            mtr: Some(VcuAdsMtr::new(states[0], 0, Gear::Parking.to_raw(), 0.0).unwrap()),
+            mtr_at: Some(now),
+            brk: Some(VcuAdsBrk::new(states[1], 0, 0, 0.0).unwrap()),
+            brk_at: Some(now),
+            eps: Some(VcuAdsEps::new(states[2], 0.0, 0.0).unwrap()),
+            eps_at: Some(now),
+            veh: Some(
+                VcuAdsVehicle::new(0, states[3], false, 0, false, 0, false, false, false, false)
+                    .unwrap(),
+            ),
+            veh_at: Some(now),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn all_manual_is_manual() {
+        assert_eq!(
+            status([MANUAL; 4]).vehicle_mode(TIMEOUT),
+            VehicleMode::Manual
+        );
+    }
+
+    #[test]
+    fn all_autonomous_is_autonomous() {
+        assert_eq!(
+            status([AUTO; 4]).vehicle_mode(TIMEOUT),
+            VehicleMode::Autonomous
+        );
+    }
+
+    #[test]
+    fn mixed_states_are_abnormal() {
+        // Three across, one lagging behind — the handover is incomplete.
+        assert_eq!(
+            status([AUTO, AUTO, AUTO, MANUAL]).vehicle_mode(TIMEOUT),
+            VehicleMode::Abnormal
+        );
+        assert_eq!(
+            status([MANUAL, MANUAL, MANUAL, AUTO]).vehicle_mode(TIMEOUT),
+            VehicleMode::Abnormal
+        );
+    }
+
+    #[test]
+    fn invalid_state_is_abnormal() {
+        // Post-restart BRK/Drv come up Invalid; never treat that as either mode.
+        assert_eq!(
+            status([AUTO, INVALID, AUTO, AUTO]).vehicle_mode(TIMEOUT),
+            VehicleMode::Abnormal
+        );
+    }
+
+    #[test]
+    fn no_frames_is_abnormal() {
+        assert_eq!(
+            StatusState::default().vehicle_mode(TIMEOUT),
+            VehicleMode::Abnormal
+        );
+    }
+
+    #[test]
+    fn stale_frame_is_abnormal() {
+        // All four say Autonomous, but the brake report has gone quiet: a
+        // cached state must never keep us commanding.
+        let mut s = status([AUTO; 4]);
+        s.brk_at = Some(Instant::now() - Duration::from_secs(5));
+        assert_eq!(s.vehicle_mode(TIMEOUT), VehicleMode::Abnormal);
+        assert_eq!(s.subsystem_states(TIMEOUT)[1], None);
+    }
 }

@@ -41,6 +41,7 @@ fn main() -> Result<()> {
         params.tx_enabled,
         params.tx_rate_hz,
         Duration::from_millis(params.control_timeout_ms),
+        Duration::from_millis(params.report_timeout_ms),
         steer_limits,
         gear_config,
         Arc::clone(&state),

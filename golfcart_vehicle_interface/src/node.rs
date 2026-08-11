@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::dbc::{
-    BlinkerCtrl, BrakeMode, EpsMode, Gear, MotorMode, SubsystemState, ACCEL_MPS2_MAX,
+    BlinkerCtrl, BrakeMode, EpsMode, Gear, MotorMode, ACCEL_MPS2_MAX,
     ACCEL_MPS2_MIN, DECEL_MPS2_MAX, DECEL_MPS2_MIN, SPEED_MPS_MAX,
     TIRE_ANGLE_DEG_MAX, TIRE_ANGLE_DEG_MIN,
 };
 use crate::params::Params;
-use crate::state::SharedState;
+use crate::state::{SharedState, VehicleMode};
 
 const NODE_NAME: &str = "golfcart_vehicle_interface";
 
@@ -176,9 +176,6 @@ impl VehicleInterfaceNode {
                         log_info!(NODE_NAME, "driver e-stop released");
                     }
                     cmd.estop = msg.data;
-                    if msg.data {
-                        cmd.auto_enabled = false;
-                    }
                 },
             )?
         };
@@ -195,9 +192,6 @@ impl VehicleInterfaceNode {
                         log_info!(NODE_NAME, "MRM emergency_cmd released");
                     }
                     cmd.estop = msg.emergency;
-                    if msg.emergency {
-                        cmd.auto_enabled = false;
-                    }
                 },
             )?
         };
@@ -217,7 +211,16 @@ impl VehicleInterfaceNode {
         // system_error_monitor consumes these and rolls up into HazardStatus.
         let pub_diag = node.create_publisher::<DiagnosticArray>("/diagnostics")?;
 
-        // ----- Service: ControlModeCommand → CAN auto_enable ----------------
+        // ----- Service: ControlModeCommand ---------------------------------
+        // Mode transitions are the driver's, made on the vehicle's own
+        // controls; this service cannot engage anything. An AUTONOMOUS request
+        // is therefore only an acknowledgement — it succeeds when the VCU
+        // already reports all four subsystems autonomous and no fault is
+        // latched, and fails otherwise, so Autoware's engage flow blocks until
+        // the driver has actually handed the vehicle over. MANUAL /
+        // NO_COMMAND stays useful: it clears the fault latch and zeroes the
+        // held setpoints.
+        let report_timeout_srv = Duration::from_millis(params.report_timeout_ms);
         let srv_mode = {
             let state = Arc::clone(&state);
             node.create_service::<ControlModeCommand, _>(
@@ -257,53 +260,36 @@ impl VehicleInterfaceNode {
                     let mut cmd = state.command.lock();
 
                     if want_engage {
-                        // Refuse if a previous fault was latched OR the ECU is
-                        // currently reporting any hazard. Caller must first
-                        // request MANUAL/NO_COMMAND to clear, after addressing
-                        // the underlying issue.
-                        let live_fault = state
-                            .status
-                            .lock()
-                            .veh
-                            .map(|v| {
-                                v.vcu_ads_estop_raw()
-                                    || v.vcu_ads_error_code_sys_raw()
-                                    || v.vcu_ads_error_code_mtr_raw()
-                                    || v.vcu_ads_error_code_eps_raw()
-                                    || v.vcu_ads_error_code_brk_raw()
-                            })
-                            .unwrap_or(false);
-                        if cmd.fault_latched || live_fault {
+                        // Nothing to set: the driver switches the vehicle over.
+                        // Report whether it is already there and unfaulted.
+                        let vehicle_mode =
+                            state.status.lock().vehicle_mode(report_timeout_srv);
+                        let engaged = vehicle_mode == VehicleMode::Autonomous
+                            && !cmd.fault_latched;
+                        if !engaged {
                             log_info!(
                                 NODE_NAME,
-                                "ControlMode AUTONOMOUS rejected: fault_latched={} live_fault={}",
-                                cmd.fault_latched,
-                                live_fault
+                                "ControlMode AUTONOMOUS not acknowledged: vehicle_mode={:?} \
+                                 fault_latched={} — mode changes are made by the driver on \
+                                 the vehicle, not over this service",
+                                vehicle_mode,
+                                cmd.fault_latched
                             );
-                            return ControlModeCommand_Response { success: false };
                         }
-                        // Reset on engage transition: stale watchdog from a
-                        // previous drive must not instantly trip SafetyBrake
-                        // before the planner publishes its first Control msg.
-                        if !cmd.auto_enabled {
-                            cmd.last_control_at = None;
-                        }
-                        cmd.auto_enabled = true;
-                    } else {
-                        // Disengage path also clears the latch so the user can
-                        // re-engage after fixing the issue.
-                        cmd.auto_enabled = false;
-                        cmd.fault_latched = false;
-                        cmd.target_speed_mps = 0.0;
-                        cmd.target_acceleration_mps2 = 0.0;
-                        cmd.target_tire_angle_rad = 0.0;
+                        return ControlModeCommand_Response { success: engaged };
                     }
+
+                    // MANUAL / NO_COMMAND: clear the latch so the vehicle can
+                    // be driven autonomously again once the driver hands it
+                    // back, and drop any held setpoints.
+                    cmd.fault_latched = false;
+                    cmd.target_speed_mps = 0.0;
+                    cmd.target_acceleration_mps2 = 0.0;
+                    cmd.target_tire_angle_rad = 0.0;
                     log_info!(
                         NODE_NAME,
-                        "ControlMode request: mode={} -> auto_enabled={} fault_latched={}",
-                        req.mode,
-                        cmd.auto_enabled,
-                        cmd.fault_latched
+                        "ControlMode request: mode={} -> fault latch cleared, setpoints zeroed",
+                        req.mode
                     );
                     ControlModeCommand_Response { success: true }
                 },
@@ -417,19 +403,19 @@ fn publish_status(
         });
     }
 
-    // ControlModeReport: respect local intent, not just what the VCU echoes.
-    // A fault latch or user disengage MUST surface as DISENGAGED so Autoware
-    // can react regardless of the VCU's still-cached Autonomous state. A stale
-    // VCU report (no recent VCU_ADS_VEHICLE) reads as NOT_READY so Autoware
-    // does not assume engagement off cached data.
+    // ControlModeReport mirrors the vehicle's own aggregate state: all four
+    // VCU subsystems autonomous → AUTONOMOUS, all four manual → MANUAL,
+    // anything else (mixed, Invalid, or a stale frame) → NOT_READY. A latched
+    // fault still overrides to DISENGAGED: we refuse to command in that state,
+    // so reporting AUTONOMOUS would lie to Autoware even if the VCU is willing.
     let mode = if cmd.fault_latched {
         ControlModeReport::DISENGAGED
-    } else if !cmd.auto_enabled {
-        ControlModeReport::MANUAL
-    } else if let Some(veh) = veh_fresh {
-        dbc_state_to_control_mode(SubsystemState::from_raw(veh.vcu_ads_driving_state_raw()))
     } else {
-        ControlModeReport::NOT_READY
+        match status.vehicle_mode(report_timeout) {
+            VehicleMode::Autonomous => ControlModeReport::AUTONOMOUS,
+            VehicleMode::Manual => ControlModeReport::MANUAL,
+            VehicleMode::Abnormal => ControlModeReport::NOT_READY,
+        }
     };
     let _ = pubs.mode.publish(ControlModeReport {
         stamp: stamp.clone(),
@@ -511,14 +497,6 @@ fn dbc_gear_to_autoware(g: Gear) -> u8 {
         Gear::Reverse => GearReport::REVERSE,
         Gear::Neutral => GearReport::NEUTRAL,
         Gear::Parking => GearReport::PARK,
-    }
-}
-
-fn dbc_state_to_control_mode(s: SubsystemState) -> u8 {
-    match s {
-        SubsystemState::Autonomous => ControlModeReport::AUTONOMOUS,
-        SubsystemState::Manual | SubsystemState::RemoteControl => ControlModeReport::MANUAL,
-        SubsystemState::Invalid => ControlModeReport::NOT_READY,
     }
 }
 
@@ -712,7 +690,26 @@ fn publish_diagnostics(
         },
         hardware_id: "cax_ads_can".to_string(),
         values: vec![
-            kv("auto_enabled", cmd.auto_enabled.to_string()),
+            kv(
+                "vehicle_mode",
+                format!("{:?}", status.vehicle_mode(report_timeout)),
+            ),
+            kv(
+                "subsystem_states",
+                {
+                    let s = status.subsystem_states(report_timeout);
+                    let name = |x: Option<crate::dbc::SubsystemState>| {
+                        x.map_or_else(|| "stale".to_string(), |v| format!("{v:?}"))
+                    };
+                    format!(
+                        "mtr={} brk={} eps={} drv={}",
+                        name(s[0]),
+                        name(s[1]),
+                        name(s[2]),
+                        name(s[3])
+                    )
+                },
+            ),
             kv("fault_latched", cmd.fault_latched.to_string()),
             kv("driver_estop", cmd.estop.to_string()),
             kv(

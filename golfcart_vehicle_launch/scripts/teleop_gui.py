@@ -178,14 +178,16 @@ class TeleopGUI:
         mode_frame.pack(fill="x", **pad)
         self.mode_status = ttk.Label(mode_frame, text="—")
         self.mode_status.pack(side="right", padx=8)
+        # The driver engages autonomous on the vehicle itself; this button only
+        # asks the interface whether the vehicle is already there.
         ttk.Button(
             mode_frame,
-            text="Engage AUTONOMOUS",
+            text="Check AUTONOMOUS",
             command=lambda: self._on_mode(ControlModeCommand.Request.AUTONOMOUS),
         ).pack(side="left", expand=True, fill="x", padx=4, pady=4)
         ttk.Button(
             mode_frame,
-            text="Disengage MANUAL",
+            text="Clear fault (MANUAL)",
             command=lambda: self._on_mode(ControlModeCommand.Request.MANUAL),
         ).pack(side="left", expand=True, fill="x", padx=4, pady=4)
 
@@ -245,9 +247,13 @@ class TeleopGUI:
 
     def _on_mode(self, mode: int) -> None:
         ok = self.node.request_mode(mode)
-        self.mode_status.config(
-            text=("AUTONOMOUS" if mode == 1 else "MANUAL") + ("" if ok else " (FAIL)")
-        )
+        if mode == ControlModeCommand.Request.AUTONOMOUS:
+            # success == "the VCU reports all four subsystems autonomous and no
+            # fault is latched", not "engaged just now".
+            text = "AUTONOMOUS" if ok else "not in AUTONOMOUS"
+        else:
+            text = "fault cleared" if ok else "clear FAILED"
+        self.mode_status.config(text=text)
 
     def _toggle_hazard(self) -> None:
         self.hazard_on = not self.hazard_on

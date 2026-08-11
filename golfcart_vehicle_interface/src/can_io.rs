@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 
 use crate::dbc::{
     checksum_stub, AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, BlinkerCtrl, BrakeMode, Gear,
-    Messages, SubsystemState, VcuAdsVehicle,
+    Messages, VcuAdsVehicle,
 };
-use crate::state::{CommandState, SharedState};
+use crate::state::{CommandState, SharedState, VehicleMode};
 
 const NODE_NAME: &str = "golfcart_vehicle_interface";
 
@@ -65,6 +65,7 @@ pub fn spawn(
     tx_enabled: bool,
     tx_rate_hz: f64,
     control_timeout: Duration,
+    report_timeout: Duration,
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
     state: Arc<SharedState>,
@@ -101,6 +102,7 @@ pub fn spawn(
                 tx_running,
                 period,
                 control_timeout,
+                report_timeout,
                 steer_limits,
                 gear_config,
             )
@@ -223,9 +225,13 @@ fn rx_loop(
 }
 
 /// On every VCU_ADS_VEHICLE frame, look for hazard signals and latch a fault
-/// if any are set, and detect driver overrides while we claim auto. Both
-/// conditions disengage auto. A latched fault additionally forces the TX loop
-/// into safety-brake until the user issues a MANUAL/NO_COMMAND request.
+/// if any are set. A latched fault forces the TX loop into safety-brake (while
+/// the vehicle is in `Autonomous`) until the user issues a MANUAL/NO_COMMAND
+/// request.
+///
+/// Driver override needs no handling here: the driver switching any subsystem
+/// back to `Manual` breaks the all-four-`Autonomous` unanimity, so the TX loop
+/// stops commanding on its own (see `TxMode::evaluate`).
 fn handle_vehicle_status(state: &Arc<SharedState>, m: &VcuAdsVehicle) {
     let estop = m.vcu_ads_estop_raw();
     let err_sys = m.vcu_ads_error_code_sys_raw();
@@ -233,16 +239,13 @@ fn handle_vehicle_status(state: &Arc<SharedState>, m: &VcuAdsVehicle) {
     let err_eps = m.vcu_ads_error_code_eps_raw();
     let err_brk = m.vcu_ads_error_code_brk_raw();
     let fault = estop || err_sys || err_mtr || err_eps || err_brk;
-    let vcu_state = SubsystemState::from_raw(m.vcu_ads_driving_state_raw());
-    let driver_override =
-        matches!(vcu_state, SubsystemState::Manual | SubsystemState::RemoteControl);
 
-    if !fault && !driver_override {
+    if !fault {
         return;
     }
 
     let mut cmd = state.command.lock();
-    if fault && !cmd.fault_latched {
+    if !cmd.fault_latched {
         // Log only on the rising edge — frames arrive at ~50 Hz and we don't
         // want to spam.
         log_error!(
@@ -251,17 +254,7 @@ fn handle_vehicle_status(state: &Arc<SharedState>, m: &VcuAdsVehicle) {
             estop, err_sys, err_mtr, err_eps, err_brk
         );
     }
-    if driver_override && cmd.auto_enabled {
-        log_warn!(
-            NODE_NAME,
-            "driver override detected (VCU state {:?}); disengaging auto",
-            vcu_state
-        );
-    }
-    if fault {
-        cmd.fault_latched = true;
-    }
-    cmd.auto_enabled = false;
+    cmd.fault_latched = true;
 }
 
 fn tx_loop(
@@ -272,6 +265,7 @@ fn tx_loop(
     running: Arc<AtomicBool>,
     period: Duration,
     control_timeout: Duration,
+    report_timeout: Duration,
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
 ) {
@@ -295,9 +289,30 @@ fn tx_loop(
     let mut prev_tire_at: Option<Instant> = None;
     let mut consecutive_tx_errors: u32 = 0;
     let mut last_tx_error_log: Option<Instant> = None;
+    let mut prev_vehicle_mode = VehicleMode::default();
     while running.load(Ordering::Relaxed) {
+        // Control mode is the vehicle's to declare: the driver switches the
+        // subsystems over, we read the four reported states back. Commands go
+        // on the wire only while all four say `Autonomous`.
+        let vehicle_mode = state.status.lock().vehicle_mode(report_timeout);
+        if vehicle_mode != prev_vehicle_mode {
+            log_info!(
+                NODE_NAME,
+                "vehicle control mode {:?} -> {:?}",
+                prev_vehicle_mode,
+                vehicle_mode
+            );
+            if vehicle_mode == VehicleMode::Autonomous {
+                // Entering auto: drop any Control timestamp from the previous
+                // run, otherwise the staleness watchdog trips SafetyBrake
+                // before the planner has published its first command.
+                state.command.lock().last_control_at = None;
+            }
+            prev_vehicle_mode = vehicle_mode;
+        }
+
         let cmd_snapshot = *state.command.lock();
-        let mode = TxMode::evaluate(&cmd_snapshot, control_timeout);
+        let mode = TxMode::evaluate(&cmd_snapshot, vehicle_mode, control_timeout);
         rolling = rolling.wrapping_add(1);
 
         // Speed only trusted if MTR frame is fresh. Stale (or never received)
@@ -315,30 +330,6 @@ fn tx_loop(
         };
         let now = Instant::now();
         let driving = mode == TxMode::Driving;
-
-        // Slew-limit steering setpoint based on actual vehicle speed.
-        // Unknown speed forces stopped-rate (slowest) — better to track
-        // tightly than yank the wheel on a phantom high-speed assumption.
-        let limited_tire_rad = if driving {
-            let max_rate = if !speed_known || speed_mps < 0.05 {
-                steer_limits.stopped_rps
-            } else if speed_mps < steer_limits.low_vel_thresh_mps {
-                steer_limits.low_vel_rps
-            } else {
-                steer_limits.nominal_rps
-            };
-            let dt = prev_tire_at.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(0.0);
-            let max_step = max_rate * dt.max(0.0);
-            let target = cmd_snapshot.target_tire_angle_rad;
-            let delta = (target - prev_tire_rad).clamp(-max_step, max_step);
-            prev_tire_rad + delta
-        } else {
-            // When idle/safety-brake, keep state aligned with the commanded
-            // hold (zero) so re-engage starts from neutral.
-            0.0
-        };
-        prev_tire_rad = limited_tire_rad;
-        prev_tire_at = Some(now);
 
         // Gear anti-chatter: only forward a new gear once `change_margin` has
         // elapsed since the last accepted change AND the cart is below
@@ -358,7 +349,38 @@ fn tx_loop(
         } else {
             cmd_snapshot.last_gear_sent
         };
-        let shift_brake = gear_pending && low_speed;
+        // Brake-during-shift is an actuation, so it is only asserted while we
+        // are actually driving the vehicle — never in manual/abnormal.
+        let shift_brake = driving && gear_pending && low_speed;
+        // Parking pins both speed and steering to zero (see `build_frames`);
+        // the slew limiter has to agree, or re-selecting Drive would replay a
+        // stale angle through the rate limit.
+        let parked = actual_gear == Gear::Parking;
+
+        // Slew-limit steering setpoint based on actual vehicle speed.
+        // Unknown speed forces stopped-rate (slowest) — better to track
+        // tightly than yank the wheel on a phantom high-speed assumption.
+        let limited_tire_rad = if driving && !parked {
+            let max_rate = if !speed_known || speed_mps < 0.05 {
+                steer_limits.stopped_rps
+            } else if speed_mps < steer_limits.low_vel_thresh_mps {
+                steer_limits.low_vel_rps
+            } else {
+                steer_limits.nominal_rps
+            };
+            let dt = prev_tire_at.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(0.0);
+            let max_step = max_rate * dt.max(0.0);
+            let target = cmd_snapshot.target_tire_angle_rad;
+            let delta = (target - prev_tire_rad).clamp(-max_step, max_step);
+            prev_tire_rad + delta
+        } else {
+            // When idle/parked/safety-brake, keep state aligned with the
+            // commanded hold (zero) so re-engage starts from neutral.
+            0.0
+        };
+        prev_tire_rad = limited_tire_rad;
+        prev_tire_at = Some(now);
+
         // The blinker actually placed on the wire matches what build_frames
         // emits below: hazard while in safety-brake, otherwise the user cmd.
         let blinker_on_wire = if mode == TxMode::SafetyBrake {
@@ -428,7 +450,6 @@ fn tx_loop(
                 );
                 let mut c = state.command.lock();
                 c.fault_latched = true;
-                c.auto_enabled = false;
                 c.tx_failed = true;
             }
             // Try reopening the socket every TX_REOPEN_INTERVAL ticks while
@@ -474,22 +495,31 @@ fn tx_loop(
 /// engagement, freshness of Autoware control, and any latched faults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TxMode {
-    /// User has not engaged (or just disengaged). Send heartbeats with all
-    /// enables off; do not claim Veh_Auto_En.
+    /// The vehicle is not in `Autonomous` — the driver holds it, or the
+    /// reported states disagree. Send heartbeats with all enables off, all
+    /// setpoints zero, and no Veh_Auto_En claim.
     Idle,
-    /// User engaged, but no Control message has arrived yet — wait without
-    /// braking. We claim Veh_Auto_En so the VCU is ready to drive.
+    /// Vehicle in `Autonomous`, but no Control message has arrived yet — wait
+    /// without braking. We claim Veh_Auto_En so the VCU is ready to drive.
     EngagedWaiting,
-    /// Driving: engaged, Control fresh, no faults. Apply Autoware setpoints.
+    /// Driving: `Autonomous`, Control fresh, no faults. Apply Autoware setpoints.
     Driving,
-    /// Safety brake: latched ECU fault, driver e-stop, OR engaged+stale (the
+    /// Safety brake: latched ECU fault, driver e-stop, OR auto+stale (the
     /// planner stopped emitting Control mid-drive). Command active braking
-    /// while keeping Veh_Auto_En so the VCU honours the brake.
+    /// while keeping Veh_Auto_En so the VCU honours the brake. Only reachable
+    /// while the vehicle is in `Autonomous`; in manual the driver's own brake
+    /// is the authority and we stay off the wire.
     SafetyBrake,
 }
 
 impl TxMode {
-    fn evaluate(cmd: &CommandState, control_timeout: Duration) -> Self {
+    fn evaluate(cmd: &CommandState, vehicle_mode: VehicleMode, control_timeout: Duration) -> Self {
+        // Mode gate first: nothing is commanded unless all four VCU subsystem
+        // states report Autonomous. Manual and Abnormal both mean hands off.
+        if vehicle_mode != VehicleMode::Autonomous {
+            return Self::Idle;
+        }
+
         let was_driving = cmd.last_control_at.is_some();
         let stale = cmd
             .last_control_at
@@ -499,16 +529,13 @@ impl TxMode {
         if cmd.fault_latched || cmd.estop {
             return Self::SafetyBrake;
         }
-        if cmd.auto_enabled && was_driving && stale {
+        if was_driving && stale {
             return Self::SafetyBrake;
         }
-        if cmd.auto_enabled && !stale {
+        if !stale {
             return Self::Driving;
         }
-        if cmd.auto_enabled {
-            return Self::EngagedWaiting;
-        }
-        Self::Idle
+        Self::EngagedWaiting
     }
 
     /// True while we want the VCU to honour our actuator commands. False when
@@ -541,15 +568,33 @@ fn build_frames(
     let authority = mode.claims_authority();
     let shift_braking = shift_brake_decel_mps2.is_some();
 
+    // Two protections carried over from the ROOTS bench simulator
+    // (`Roots_ipc_can_test.py`), re-applied on every frame we build so nothing
+    // can leak onto the wire:
+    //
+    //   * Target speed is never negative. `Ads_Vcu_Target_Speed` is a
+    //     magnitude — reverse is selected with gear R — and the VCU misbehaves
+    //     on a negative target. `f32::max` also folds NaN to 0.0.
+    //   * Parking pins speed and steering to zero. While the transmitted gear
+    //     is P the cart must neither drive nor steer, whatever the planner
+    //     asks for.
+    let parked = actual_gear == Gear::Parking;
+    let target_speed_mps = if parked {
+        0.0
+    } else {
+        cmd.target_speed_mps.max(0.0)
+    };
+    let tire_rad = if parked { 0.0 } else { slew_limited_tire_rad };
+
     // Manual: once Ads_Vcu_Target_Deceleration > 0 the VCU cuts motor torque
     // (deceleration takes priority over speed) to protect the motor. Mirror
     // that here so motor and brake never fight on the bus — drop the motor
     // whenever we are actively decelerating on the planner's command.
     let decel_active = driving && cmd.target_deceleration_mps2 > 0.0;
-    // Motor: only drive when on fresh planner setpoints, not shift-braking, and
-    // not decelerating. Gear-enable stays on while driving so the VCU always
-    // knows the requested gear even when torque is cut.
-    let motor_active = driving && !shift_braking && !decel_active;
+    // Motor: only drive when on fresh planner setpoints, not shift-braking,
+    // not decelerating, and not parked. Gear-enable stays on while driving so
+    // the VCU always knows the requested gear even when torque is cut.
+    let motor_active = driving && !shift_braking && !decel_active && !parked;
     let motor = AdsVcuMtr::new(
         motor_active,
         driving,
@@ -557,7 +602,7 @@ fn build_frames(
         actual_gear.to_raw(),
         if motor_active { cmd.target_throttle_pct } else { 0.0 },
         if motor_active { cmd.target_acceleration_mps2.max(0.0) } else { 0.0 },
-        if motor_active { cmd.target_speed_mps } else { 0.0 },
+        if motor_active { target_speed_mps } else { 0.0 },
         chksum,
     )
     .expect("AdsVcuMtr fields are clamped at the call site");
@@ -593,13 +638,9 @@ fn build_frames(
     // setpoint, eps_en=false) in safety-brake — we don't want to swerve.
     // Use the slew-limited tire angle so EPS sees a continuous trajectory.
     let eps = AdsVcuEps::new(
-        driving,
+        driving && !parked,
         cmd.eps_mode.to_raw(),
-        if driving {
-            slew_limited_tire_rad.to_degrees()
-        } else {
-            0.0
-        },
+        if driving { tire_rad.to_degrees() } else { 0.0 },
         0.0,
         chksum,
     )
@@ -609,7 +650,15 @@ fn build_frames(
     // something. Ads_Status reports "Running" only while genuinely driving;
     // anything else is "Error" so the VCU sees the abnormal state. Hazard
     // blinker overrides the user blinker on safety-brake.
-    let blinker = if safety_brake {
+    //
+    // Without authority (the vehicle is in manual or an abnormal state) every
+    // actuating field goes out zeroed — lights, prompts and the e-stop bit
+    // included. The driver owns the vehicle then; the frames are pure
+    // heartbeat, which is what clears MTR/EPS out of `Invalid` on the VCU
+    // side without commanding anything.
+    let blinker = if !authority {
+        BlinkerCtrl::Off
+    } else if safety_brake {
         BlinkerCtrl::Hazard
     } else {
         cmd.blinker
@@ -618,12 +667,12 @@ fn build_frames(
         authority,
         if driving { 1 } else { 0 },
         false,
-        cmd.estop || safety_brake,
+        authority && (cmd.estop || safety_brake),
         blinker.to_raw(),
-        cmd.headlight,
-        matches!(cmd.blinker, BlinkerCtrl::Right),
-        matches!(cmd.blinker, BlinkerCtrl::Left),
-        matches!(actual_gear, Gear::Reverse),
+        authority && cmd.headlight,
+        authority && matches!(cmd.blinker, BlinkerCtrl::Right),
+        authority && matches!(cmd.blinker, BlinkerCtrl::Left),
+        authority && matches!(actual_gear, Gear::Reverse),
         authority,
         0,
         rolling,
@@ -642,71 +691,94 @@ fn build_frames(
 #[cfg(test)]
 mod tx_mode_tests {
     use super::TxMode;
-    use crate::state::CommandState;
+    use crate::state::{CommandState, VehicleMode};
     use std::time::{Duration, Instant};
 
     const TIMEOUT: Duration = Duration::from_millis(500);
+    const AUTO: VehicleMode = VehicleMode::Autonomous;
 
     fn cmd() -> CommandState {
         CommandState::default()
     }
 
     #[test]
-    fn idle_when_disengaged() {
-        let c = cmd();
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::Idle);
+    fn idle_when_vehicle_manual() {
+        let mut c = cmd();
+        c.last_control_at = Some(Instant::now());
+        assert_eq!(
+            TxMode::evaluate(&c, VehicleMode::Manual, TIMEOUT),
+            TxMode::Idle
+        );
+    }
+
+    #[test]
+    fn idle_when_vehicle_abnormal() {
+        // Mixed / Invalid / stale subsystem states: fresh planner commands
+        // must not reach the wire.
+        let mut c = cmd();
+        c.last_control_at = Some(Instant::now());
+        assert_eq!(
+            TxMode::evaluate(&c, VehicleMode::Abnormal, TIMEOUT),
+            TxMode::Idle
+        );
+    }
+
+    #[test]
+    fn idle_when_manual_even_with_estop_or_fault() {
+        // In manual the driver owns the brake pedal; we stay off the wire
+        // instead of commanding a safety brake behind their back.
+        let mut c = cmd();
+        c.estop = true;
+        c.fault_latched = true;
+        assert_eq!(
+            TxMode::evaluate(&c, VehicleMode::Manual, TIMEOUT),
+            TxMode::Idle
+        );
     }
 
     #[test]
     fn engaged_waiting_when_no_control_yet() {
-        let mut c = cmd();
-        c.auto_enabled = true;
+        let c = cmd();
         // last_control_at = None => never received Control
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::EngagedWaiting);
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::EngagedWaiting);
     }
 
     #[test]
     fn driving_when_fresh_control() {
         let mut c = cmd();
-        c.auto_enabled = true;
         c.last_control_at = Some(Instant::now());
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::Driving);
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::Driving);
     }
 
     #[test]
-    fn safety_brake_when_engaged_and_stale() {
+    fn safety_brake_when_auto_and_stale() {
         let mut c = cmd();
-        c.auto_enabled = true;
         c.last_control_at = Some(Instant::now() - Duration::from_secs(2));
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::SafetyBrake);
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::SafetyBrake);
     }
 
     #[test]
-    fn safety_brake_when_fault_latched_overrides_engagement() {
+    fn safety_brake_when_fault_latched_overrides_driving() {
         let mut c = cmd();
-        c.auto_enabled = true;
         c.last_control_at = Some(Instant::now());
         c.fault_latched = true;
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::SafetyBrake);
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::SafetyBrake);
     }
 
     #[test]
-    fn safety_brake_when_estop_even_disengaged() {
-        // estop should drive a brake regardless of auto state — guards against
-        // the cart coasting after a driver e-stop while disengaged.
+    fn safety_brake_when_estop_in_auto() {
         let mut c = cmd();
         c.estop = true;
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::SafetyBrake);
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::SafetyBrake);
     }
 
     #[test]
-    fn cold_start_does_not_safety_brake_on_engage() {
-        // Re-engage path: was never driving, no Control yet — must NOT trip
+    fn cold_start_does_not_safety_brake_on_handover() {
+        // Handover path: was never driving, no Control yet — must NOT trip
         // SafetyBrake, must wait. Regression for the stale-watchdog bug.
         let mut c = cmd();
-        c.auto_enabled = true;
         c.last_control_at = None;
-        assert_eq!(TxMode::evaluate(&c, TIMEOUT), TxMode::EngagedWaiting);
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::EngagedWaiting);
     }
 
     #[test]
@@ -715,5 +787,89 @@ mod tx_mode_tests {
         assert!(TxMode::EngagedWaiting.claims_authority());
         assert!(TxMode::Driving.claims_authority());
         assert!(TxMode::SafetyBrake.claims_authority());
+    }
+}
+
+#[cfg(test)]
+mod protection_tests {
+    //! The two ROOTS bench-simulator safety rules, checked on the bytes that
+    //! `build_frames` actually produces: speed is never negative, and gear P
+    //! pins speed and steering to zero.
+
+    use super::{build_frames, TxMode};
+    use crate::dbc::{AdsVcuEps, AdsVcuMtr, Gear};
+    use crate::state::CommandState;
+    use std::time::Instant;
+
+    fn driving_cmd() -> CommandState {
+        let mut c = CommandState::default();
+        c.last_control_at = Some(Instant::now());
+        c
+    }
+
+    /// Decode the MTR and EPS frames out of a `build_frames` result.
+    fn mtr_eps(frames: [(u32, [u8; 8]); 4]) -> (AdsVcuMtr, AdsVcuEps) {
+        let mtr = AdsVcuMtr::try_from(frames[0].1.as_slice()).expect("MTR decodes");
+        let eps = AdsVcuEps::try_from(frames[2].1.as_slice()).expect("EPS decodes");
+        (mtr, eps)
+    }
+
+    #[test]
+    fn negative_speed_never_reaches_the_wire() {
+        let mut c = driving_cmd();
+        c.target_speed_mps = -3.0; // reverse is gear R, never a negative target
+        let (mtr, _) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None));
+        assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
+    }
+
+    #[test]
+    fn nan_speed_folds_to_zero() {
+        let mut c = driving_cmd();
+        c.target_speed_mps = f32::NAN;
+        let (mtr, _) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None));
+        assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
+    }
+
+    #[test]
+    fn parking_pins_speed_and_steering() {
+        let mut c = driving_cmd();
+        c.target_speed_mps = 2.0;
+        c.target_tire_angle_rad = 0.3;
+        let (mtr, eps) = mtr_eps(build_frames(
+            &c,
+            TxMode::Driving,
+            0,
+            0.3, // slew limiter already tracking a non-zero angle
+            Gear::Parking,
+            None,
+        ));
+        assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
+        assert_eq!(eps.ads_vcu_target_tire_angle(), 0.0);
+        assert!(!bool::from(mtr.ads_vcu_motor_en()));
+        assert!(!bool::from(eps.ads_vcu_eps_en()));
+    }
+
+    #[test]
+    fn drive_gear_still_passes_setpoints() {
+        // Guard against the parking pin being over-eager.
+        let mut c = driving_cmd();
+        c.target_speed_mps = 2.0;
+        let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.2, Gear::Drive, None));
+        assert!((mtr.ads_vcu_target_speed() - 2.0).abs() < 0.05);
+        assert!((eps.ads_vcu_target_tire_angle() - 0.2_f32.to_degrees()).abs() < 0.5);
+    }
+
+    #[test]
+    fn idle_mode_sends_no_setpoints() {
+        // Vehicle in manual/abnormal: heartbeat only.
+        let mut c = driving_cmd();
+        c.target_speed_mps = 2.0;
+        c.target_tire_angle_rad = 0.3;
+        let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Idle, 0, 0.3, Gear::Drive, None));
+        assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
+        assert_eq!(eps.ads_vcu_target_tire_angle(), 0.0);
+        assert!(!bool::from(mtr.ads_vcu_motor_en()));
+        assert!(!bool::from(mtr.ads_vcu_gear_en()));
+        assert!(!bool::from(eps.ads_vcu_eps_en()));
     }
 }
