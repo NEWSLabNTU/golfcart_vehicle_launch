@@ -18,3 +18,9 @@
     # VCU and on the way back from it. Set false only if a VCU build changes
     # that convention - with the wrong value the cart steers the wrong way.
     invert_steering: true
+    # Minimum Autoware Control publish rate (Hz) required to command a speed.
+    # Below it the speed setpoint is held at 0 and a throttled warning is
+    # logged: a planner updating a few times a second leaves the cart driving
+    # blind between updates. Steering, gear and brake still pass through, and
+    # total silence is handled by control_timeout_ms. 0 disables the check.
+    control_min_rate_hz: 10.0

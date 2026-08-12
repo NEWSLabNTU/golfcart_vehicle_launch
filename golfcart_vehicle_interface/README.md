@@ -266,6 +266,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `publish_rate_hz` | f64 | 50.0 | Frequency of Autoware status reports. |
 | `frame_id` | string | `base_link` | `frame_id` written into VelocityReport.header. |
 | `control_timeout_ms` | i64 | 500 | Max age of a Control msg before TX trips into `SafetyBrake`. |
+| `control_min_rate_hz` | f32 | 10.0 | Minimum Control publish rate to command a speed. Below it the speed setpoint is held at 0, with a throttled warning and a `vehicle_interface/control_rate` WARN diagnostic. Steering, gear and brake still pass. 0 disables. |
 | `report_timeout_ms` | i64 | 1000 | Max age of a VCU_ADS_VEHICLE frame before status counts as stale. |
 | `max_speed_mps` | f64 | 5.0 | Cap on speed setpoint magnitude. Effective cap is `min(max_speed_mps, 6.944)` — ROOTS tops out at 25 km/h. Direction is set by the gear; the setpoint is always non-negative. |
 | `max_accel_mps2` | f64 | 2.0 | Cap on forward accel setpoint. |

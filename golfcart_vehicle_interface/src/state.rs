@@ -63,6 +63,11 @@ pub struct CommandState {
     /// Last time a Control message was received. Commands are only sent while
     /// recent — protects the vehicle from a stalled planner.
     pub last_control_at: Option<Instant>,
+    /// Arrival times of the last `FREQ_WINDOW_LEN` Control messages. The TX
+    /// path zeroes the speed setpoint when Autoware publishes too slowly to
+    /// steer a moving vehicle safely — see `control_min_rate_hz`. A publisher
+    /// that stops entirely is the `control_timeout_ms` watchdog's business.
+    pub control_freq: FreqWindow,
     /// Most recent gear actually transmitted on CAN. The TX path latches this
     /// to suppress chatter — incoming gear_cmd changes are deferred until
     /// `last_gear_change_at` is at least `gear_change_margin` old, matching
@@ -99,6 +104,7 @@ impl Default for CommandState {
             estop: false,
             fault_latched: false,
             last_control_at: None,
+            control_freq: FreqWindow::default(),
             last_gear_sent: Gear::Parking,
             last_gear_change_at: None,
             last_blinker_sent: BlinkerCtrl::Off,

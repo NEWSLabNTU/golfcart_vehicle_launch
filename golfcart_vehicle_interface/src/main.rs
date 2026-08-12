@@ -45,6 +45,7 @@ fn main() -> Result<()> {
         steer_limits,
         gear_config,
         node::steering_sign(&params),
+        params.control_min_rate_hz,
         Arc::clone(&state),
         Arc::clone(&running),
     ) {

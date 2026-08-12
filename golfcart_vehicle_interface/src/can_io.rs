@@ -73,6 +73,7 @@ pub fn spawn(
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
     steering_sign: f32,
+    control_min_rate_hz: f32,
     state: Arc<SharedState>,
     running: Arc<AtomicBool>,
 ) -> Result<CanThreads> {
@@ -111,6 +112,7 @@ pub fn spawn(
                 steer_limits,
                 gear_config,
                 steering_sign,
+                control_min_rate_hz,
             )
         })?;
 
@@ -275,6 +277,7 @@ fn tx_loop(
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
     steering_sign: f32,
+    control_min_rate_hz: f32,
 ) {
     if !tx_enabled {
         log_warn!(
@@ -296,6 +299,18 @@ fn tx_loop(
     let mut prev_tire_at: Option<Instant> = None;
     let mut consecutive_tx_errors: u32 = 0;
     let mut last_tx_error_log: Option<Instant> = None;
+    // Rate-guard logging: one line when the input rate goes bad, one when it
+    // recovers, and a reminder no more often than this while it stays bad. At
+    // 100 Hz TX an unthrottled warning would bury every other log line.
+    const RATE_WARN_INTERVAL: Duration = Duration::from_secs(5);
+    // Recovery needs the rate to hold up for this long. Without hysteresis a
+    // slow publisher looks healthy for the instant after each message arrives,
+    // which would flap the state, defeat the log throttle, and hand speed
+    // authority back and forth many times a second.
+    const RATE_RECOVER_HOLD: Duration = Duration::from_secs(1);
+    let mut rate_low = false;
+    let mut last_rate_warn: Option<Instant> = None;
+    let mut rate_ok_since: Option<Instant> = None;
     let mut prev_vehicle_mode = VehicleMode::default();
     while running.load(Ordering::Relaxed) {
         // Control mode is the vehicle's to declare: the driver switches the
@@ -318,9 +333,54 @@ fn tx_loop(
             prev_vehicle_mode = vehicle_mode;
         }
 
-        let cmd_snapshot = *state.command.lock();
+        let mut cmd_snapshot = *state.command.lock();
         let mode = TxMode::evaluate(&cmd_snapshot, vehicle_mode, control_timeout);
         rolling = rolling.wrapping_add(1);
+
+        // Autoware publishing too slowly to command a speed: hold the setpoint
+        // at 0 and say so, throttled.
+        let now = Instant::now();
+        let guard = rate_guard(&cmd_snapshot, control_min_rate_hz, now);
+        if guard.too_slow {
+            rate_ok_since = None;
+            let due = last_rate_warn.map_or(true, |t| now.duration_since(t) >= RATE_WARN_INTERVAL);
+            if !rate_low || due {
+                match guard.rate_hz {
+                    Some(hz) => log_warn!(
+                        NODE_NAME,
+                        "Control input rate {hz:.1} Hz below control_min_rate_hz \
+                         {control_min_rate_hz:.1} Hz: speed setpoint held at 0"
+                    ),
+                    None => log_warn!(
+                        NODE_NAME,
+                        "Control input too sparse to measure (min \
+                         {control_min_rate_hz:.1} Hz): speed setpoint held at 0"
+                    ),
+                }
+                last_rate_warn = Some(now);
+            }
+            rate_low = true;
+        } else if rate_low {
+            // Hold the latch until the rate has been good for a while — see
+            // RATE_RECOVER_HOLD.
+            let ok_since = *rate_ok_since.get_or_insert(now);
+            if now.duration_since(ok_since) >= RATE_RECOVER_HOLD {
+                match guard.rate_hz {
+                    Some(hz) => log_info!(NODE_NAME, "Control input rate recovered: {hz:.1} Hz"),
+                    None => log_info!(NODE_NAME, "Control input rate recovered"),
+                }
+                rate_low = false;
+                rate_ok_since = None;
+                last_rate_warn = None;
+            }
+        }
+        // Latched, not instantaneous: speed authority is not handed back for
+        // the few milliseconds after each late message.
+        if rate_low {
+            cmd_snapshot.target_speed_mps = 0.0;
+            cmd_snapshot.target_acceleration_mps2 = 0.0;
+            cmd_snapshot.target_throttle_pct = 0.0;
+        }
 
         // Speed only trusted if MTR frame is fresh. Stale (or never received)
         // → mark unknown so callers default to the most conservative
@@ -560,6 +620,47 @@ fn send_frame(socket: &CanSocket, id: u32, payload: &[u8; 8]) -> std::io::Result
     let std_id = StandardId::new(id as u16).expect("frame id fits in 11 bits");
     let frame = CanFrame::new(std_id, payload).expect("8-byte payload");
     socket.write_frame(&frame)
+}
+
+/// Verdict of the Control input-rate guard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RateGuard {
+    /// Windowed publish rate, `None` until enough Control messages have arrived.
+    rate_hz: Option<f32>,
+    /// True while the rate is too low to command a speed.
+    too_slow: bool,
+}
+
+/// Decide whether Autoware is publishing Control fast enough to be allowed to
+/// command a speed, and zero the speed setpoint if it is not.
+///
+/// This is a *rate* check, distinct from the `control_timeout_ms` watchdog:
+/// silence trips the watchdog and brakes, but a planner that keeps publishing at
+/// a few hertz never trips it while still leaving the cart to travel blind
+/// between updates. Steering, gear and the brake setpoint still pass through —
+/// only the speed is withheld, so the vehicle coasts to a stop under whatever
+/// the driver or the brake command asks for rather than being yanked.
+///
+/// Both the windowed rate and the age of the newest message are checked: the
+/// window alone would keep reporting the old rate through a sudden stall until
+/// enough new samples arrived to pull the average down.
+fn rate_guard(cmd: &CommandState, min_rate_hz: f32, now: Instant) -> RateGuard {
+    let rate_hz = cmd.control_freq.rate_hz();
+    if min_rate_hz <= 0.0 || cmd.last_control_at.is_none() {
+        // Guard disabled, or nothing has been received yet — the watchdog and
+        // the TX state machine own that case.
+        return RateGuard { rate_hz, too_slow: false };
+    }
+    let max_gap = Duration::from_secs_f32(1.0 / min_rate_hz);
+    let gap_too_long = cmd
+        .last_control_at
+        .map(|t| now.saturating_duration_since(t) > max_gap)
+        .unwrap_or(true);
+    let window_too_slow = rate_hz.map_or(false, |hz| hz < min_rate_hz);
+    RateGuard {
+        rate_hz,
+        too_slow: gap_too_long || window_too_slow,
+    }
 }
 
 fn build_frames(
@@ -1045,5 +1146,72 @@ mod steering_sign_tests {
     fn zero_is_unaffected_by_the_flip() {
         // -0.0 would still decode as 0, but be explicit: straight stays straight.
         assert_eq!(eps_degrees(0.0, FLIP), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod rate_guard_tests {
+    //! The rate guard withholds the speed setpoint while Autoware publishes too
+    //! slowly to steer a moving vehicle. It is deliberately separate from the
+    //! `control_timeout_ms` watchdog, which handles silence by braking.
+
+    use super::rate_guard;
+    use crate::state::{CommandState, FREQ_WINDOW_LEN};
+    use std::time::{Duration, Instant};
+
+    const MIN_RATE: f32 = 10.0;
+
+    /// A command state whose Control window was filled at `period` intervals,
+    /// the newest sample `age` ago.
+    fn cmd_at_rate(period: Duration, age: Duration) -> (CommandState, Instant) {
+        let now = Instant::now();
+        let newest = now - age;
+        let mut c = CommandState::default();
+        for i in (0..FREQ_WINDOW_LEN).rev() {
+            c.control_freq.record(newest - period * i as u32);
+        }
+        c.last_control_at = Some(newest);
+        (c, now)
+    }
+
+    #[test]
+    fn fast_publisher_passes() {
+        let (c, now) = cmd_at_rate(Duration::from_millis(20), Duration::from_millis(5));
+        let g = rate_guard(&c, MIN_RATE, now);
+        assert!(!g.too_slow);
+        assert!(g.rate_hz.unwrap() > MIN_RATE);
+    }
+
+    #[test]
+    fn slow_publisher_is_caught() {
+        // 4 Hz: never trips a 500 ms watchdog, still far too slow to drive on.
+        let (c, now) = cmd_at_rate(Duration::from_millis(250), Duration::from_millis(10));
+        let g = rate_guard(&c, MIN_RATE, now);
+        assert!(g.too_slow);
+        assert!(g.rate_hz.unwrap() < MIN_RATE);
+    }
+
+    #[test]
+    fn a_sudden_gap_is_caught_before_the_window_catches_up() {
+        // Window still averages a healthy 50 Hz, but nothing has arrived for
+        // 300 ms — three missed periods at the minimum rate.
+        let (c, now) = cmd_at_rate(Duration::from_millis(20), Duration::from_millis(300));
+        let g = rate_guard(&c, MIN_RATE, now);
+        assert!(g.too_slow, "gap since the last message must count");
+        assert!(g.rate_hz.unwrap() > MIN_RATE, "window is still optimistic");
+    }
+
+    #[test]
+    fn nothing_received_yet_is_not_the_guards_problem() {
+        // Before the first Control the TX state machine is in Idle or
+        // EngagedWaiting; there is no speed to withhold.
+        let c = CommandState::default();
+        assert!(!rate_guard(&c, MIN_RATE, Instant::now()).too_slow);
+    }
+
+    #[test]
+    fn zero_disables_the_guard() {
+        let (c, now) = cmd_at_rate(Duration::from_millis(500), Duration::from_millis(400));
+        assert!(!rate_guard(&c, 0.0, now).too_slow);
     }
 }

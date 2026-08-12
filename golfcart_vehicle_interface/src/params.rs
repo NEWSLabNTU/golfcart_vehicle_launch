@@ -21,6 +21,13 @@ pub struct Params {
     pub frame_id: String,
     /// Maximum age of a Control message before TX trips into SafetyBrake.
     pub control_timeout_ms: u64,
+    /// Minimum Control publish rate (Hz) required to command a speed. Below
+    /// it the speed setpoint is held at 0 — a planner that updates a few times
+    /// a second cannot steer a moving vehicle safely, and the gap between
+    /// updates is long enough for the cart to travel blind. Steering and gear
+    /// still pass through, and full silence is handled by
+    /// `control_timeout_ms`. Set 0 to disable the check.
+    pub control_min_rate_hz: f32,
     /// Maximum age of a VCU_ADS_VEHICLE frame before status is treated as
     /// stale. Drives diagnostics and engage refusal.
     pub report_timeout_ms: u64,
@@ -108,6 +115,12 @@ impl Params {
             .mandatory()?
             .get();
 
+        let control_min_rate_hz = node
+            .declare_parameter("control_min_rate_hz")
+            .default(10.0)
+            .mandatory()?
+            .get();
+
         let report_timeout_ms = node
             .declare_parameter("report_timeout_ms")
             .default(1000)
@@ -188,6 +201,7 @@ impl Params {
             publish_rate_hz,
             frame_id,
             control_timeout_ms: control_timeout_ms as u64,
+            control_min_rate_hz: control_min_rate_hz as f32,
             report_timeout_ms: report_timeout_ms as u64,
             max_speed_mps: max_speed_mps as f32,
             max_accel_mps2: max_accel_mps2 as f32,

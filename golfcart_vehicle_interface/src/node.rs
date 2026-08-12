@@ -111,7 +111,9 @@ impl VehicleInterfaceNode {
                 cmd.eps_mode = EpsMode::FrontWheel;
                 cmd.brake_mode = BrakeMode::Pressure;
                 cmd.target_deceleration_mps2 = decel;
-                cmd.last_control_at = Some(Instant::now());
+                let now = Instant::now();
+                cmd.control_freq.record(now);
+                cmd.last_control_at = Some(now);
             })?
         };
 
@@ -299,6 +301,7 @@ impl VehicleInterfaceNode {
         // ----- Publish timer: read status, emit Autoware reports ------------
         let publish_period = Duration::from_secs_f64(1.0 / params.publish_rate_hz);
         let steering_sign = steering_sign(params);
+        let control_min_rate_hz = params.control_min_rate_hz;
         let report_timeout = Duration::from_millis(params.report_timeout_ms);
         let frame_id = params.frame_id.clone();
         let timer_state = Arc::clone(&state);
@@ -328,7 +331,13 @@ impl VehicleInterfaceNode {
         let diag_pub = pub_diag.clone();
         let diag_clock = node.get_clock();
         let diag_timer = node.create_timer_repeating(Duration::from_secs(1), move || {
-            publish_diagnostics(&diag_state, &diag_pub, &diag_clock, report_timeout);
+            publish_diagnostics(
+                &diag_state,
+                &diag_pub,
+                &diag_clock,
+                report_timeout,
+                control_min_rate_hz,
+            );
         })?;
 
         log_info!(
@@ -532,6 +541,7 @@ fn publish_diagnostics(
     publisher: &Publisher<DiagnosticArray>,
     clock: &Clock,
     report_timeout: Duration,
+    control_min_rate_hz: f32,
 ) {
     let cmd = *state.command.lock();
     let status = *state.status.lock();
@@ -571,6 +581,35 @@ fn publish_diagnostics(
         hardware_id: "cax_ads_can".to_string(),
         values: vec![],
     });
+
+    // Control input rate: the TX path withholds the speed setpoint below
+    // `control_min_rate_hz`, so surface why the cart is not moving. WARN, not
+    // ERROR: a slow planner is a degraded input, not broken hardware.
+    if control_min_rate_hz > 0.0 && cmd.last_control_at.is_some() {
+        let rate = cmd.control_freq.rate_hz();
+        let too_slow = rate.map_or(true, |hz| hz < control_min_rate_hz);
+        entries.push(DiagnosticStatus {
+            level: if too_slow {
+                DiagnosticStatus::WARN
+            } else {
+                DiagnosticStatus::OK
+            },
+            name: "vehicle_interface/control_rate".to_string(),
+            message: if too_slow {
+                "Control input below minimum rate — speed setpoint held at 0".to_string()
+            } else {
+                "ok".to_string()
+            },
+            hardware_id: "cax_ads_can".to_string(),
+            values: vec![
+                kv(
+                    "rate_hz",
+                    rate.map_or_else(|| "unknown".to_string(), |hz| format!("{hz:.1}")),
+                ),
+                kv("min_rate_hz", format!("{control_min_rate_hz:.1}")),
+            ],
+        });
+    }
 
     // Blinker echo check: stuck-blinker on CAN light controllers is a known
     // quirk. WARN if our last sent value disagrees with VCU echo for >500ms
