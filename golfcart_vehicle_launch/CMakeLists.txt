@@ -19,13 +19,6 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Installed to share/ rather than lib/ so launch files can name it with a plain
-# $(find-pkg-share ...) path - it is a launch-prefix wrapper, not a node.
-install(PROGRAMS
-  scripts/run_in_tmux.sh
-  DESTINATION share/${PROJECT_NAME}/scripts
-)
-
 ament_auto_package(INSTALL_TO_SHARE
   launch
   config
