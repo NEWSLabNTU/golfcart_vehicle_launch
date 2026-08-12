@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Standalone bring-up of golfcart_vehicle_interface, without Autoware.
+
+  Runs the vehicle interface by itself against a real bus (`can0`) or a vcan
+  loopback (`vcan0`). CAN TX is disabled by default, so RX still flows and
+  /vehicle/status/* and /diagnostics stay populated while the cart cannot be
+  commanded into motion. Set `tx_enabled:=true` only when you intend to drive.
+
+  Optional extras:
+    manual_control      terminal keyboard controller, in its own tmux session
+    vehicle_description robot_state_publisher (URDF + sensor kit calibration)
+    velocity_converter  twist for the Autoware localization / planning chain
+
+  Driven from `just vehicle-interface`; see docs/design/vehicle_interface_standalone.md.
+-->
+<launch>
+  <arg name="can_interface" default="can0" description="SocketCAN interface (can0 for the real bus, vcan0 for the bench)"/>
+  <arg name="tx_enabled" default="false" description="CAN TX master enable. Default false: the cart cannot be commanded into motion."/>
+  <arg name="manual_control" default="false" description="Run the keyboard controller in its own tmux session"/>
+  <arg name="vehicle_description" default="false" description="Publish the vehicle URDF via robot_state_publisher"/>
+  <arg name="velocity_converter" default="false" description="Run autoware_vehicle_velocity_converter"/>
+
+  <arg name="vehicle_model" default="golfcart_vehicle"/>
+  <arg name="sensor_model" default="golfcart_sensor_kit"/>
+  <arg name="teleop_session" default="golfcart-teleop" description="tmux session name for the keyboard controller"/>
+  <!-- Keyboard limits. Matched to the interface's own clamps (max_speed_mps
+       5.0) and to vehicle_info's max_steer_angle (0.349 rad), so a keypress
+       cannot ask for more than the platform will do. -->
+  <arg name="max_speed" default="5.0" description="Keyboard speed ceiling [m/s]"/>
+  <arg name="step_speed" default="0.25" description="Keyboard speed step per keypress [m/s]"/>
+  <arg name="max_steer_angle" default="0.349" description="Keyboard steering ceiling [rad]"/>
+  <arg name="step_steer_angle" default="0.0174" description="Keyboard steering step per keypress [rad]"/>
+
+  <!-- The interface node and its remaps live in vehicle_interface.launch.xml,
+       shared with the full Autoware stack. Single definition, no drift. -->
+  <include file="$(find-pkg-share golfcart_vehicle_launch)/launch/vehicle_interface.launch.xml">
+    <arg name="can_interface" value="$(var can_interface)"/>
+    <arg name="tx_enabled" value="$(var tx_enabled)"/>
+  </include>
+
+  <!-- Keyboard controller. Keys are read from a raw tty, which launch cannot
+       provide: stdin here is not a terminal, and sharing the launch terminal
+       would scramble the interface with log lines. run_in_tmux.sh gives the
+       node a pty of its own and blocks for its lifetime, so launch still owns
+       the process and tears the session down on shutdown. Attach with
+       `tmux attach -t golfcart-teleop`.
+
+       mode_backend=control_mode: no vehicle_cmd_gate and no adapi run here, so
+       `z` asks the vehicle interface directly. Whether the vehicle obeys is
+       still the driver's call - the interface transmits only while the VCU
+       reports all four subsystems autonomous. -->
+  <group if="$(var manual_control)">
+    <node pkg="autoware_manual_control" exec="keyboard_control" name="manual_control" output="screen"
+          launch-prefix="$(find-pkg-share golfcart_vehicle_launch)/scripts/run_in_tmux.sh $(var teleop_session) --">
+      <param name="mode_backend" value="control_mode"/>
+      <param name="control_cmd_topic" value="/control/command/control_cmd"/>
+      <param name="gear_cmd_topic" value="/control/command/gear_cmd"/>
+      <param name="control_mode_service" value="/control/control_mode_request"/>
+      <param name="control_mode_topic" value="/vehicle/status/control_mode"/>
+      <param name="max_speed" value="$(var max_speed)"/>
+      <param name="step_speed" value="$(var step_speed)"/>
+      <param name="max_steer_angle" value="$(var max_steer_angle)"/>
+      <param name="step_steer_angle" value="$(var step_steer_angle)"/>
+    </node>
+  </group>
+
+  <!-- Robot description (URDF + sensor_kit calibration) for the TF tree. -->
+  <group if="$(var vehicle_description)">
+    <node name="robot_state_publisher" pkg="robot_state_publisher" exec="robot_state_publisher">
+      <param name="robot_description"
+             value="$(command 'xacro $(find-pkg-share tier4_vehicle_launch)/urdf/vehicle.xacro vehicle_model:=$(var vehicle_model) sensor_model:=$(var sensor_model)' 'warn')"/>
+    </node>
+  </group>
+
+  <!-- Vehicle velocity converter - required by the Autoware localization /
+       planning chain, and by the trajectory-player control tests. -->
+  <group if="$(var velocity_converter)">
+    <push-ros-namespace namespace="sensing"/>
+    <include file="$(find-pkg-share autoware_vehicle_velocity_converter)/launch/vehicle_velocity_converter.launch.xml">
+      <arg name="input_vehicle_velocity_topic" value="/vehicle/status/velocity_status"/>
+      <arg name="output_twist_with_covariance" value="vehicle_velocity_converter/twist_with_covariance"/>
+    </include>
+  </group>
+</launch>

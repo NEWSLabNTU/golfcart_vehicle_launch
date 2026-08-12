@@ -58,20 +58,48 @@ Key parameters (in `params/velocity_report.yaml`):
 ### 3. Golf Cart Vehicle Launch
 
 Located in `golfcart_vehicle_launch/`, this package contains:
-- Launch files for starting the vehicle interface (`launch/vehicle_interface.launch.xml`)
-- Configuration for remapping topics between the vehicle interface and Autoware
+- `launch/vehicle_interface.launch.xml` — the interface node and its topic
+  remappings. Included by the Autoware stack and by the standalone launch below,
+  so the node is defined in exactly one place.
+- `launch/vehicle_interface_standalone.launch.xml` — the interface on its own,
+  for bench work and bring-up, with optional keyboard control, robot description
+  and velocity converter.
+- `scripts/run_in_tmux.sh` — `launch-prefix` wrapper that gives a node a terminal
+  of its own (used for the keyboard controller, which reads a raw tty).
+- `scripts/teleop_gui.py` — Tk teleop, runnable with
+  `ros2 run golfcart_vehicle_launch teleop_gui.py` when a display is available.
 
 ## Usage
 
 ### Launching the Vehicle Interface
 
-The vehicle interface can be launched using:
+Inside the Autoware stack the interface comes up with the rest of the system.
+On its own, use the recipe:
 
 ```bash
-ros2 launch golfcart_vehicle_launch vehicle_interface.launch.xml
+just vehicle-interface                        # CAN RX only, nothing can move
+just vehicle-interface keyboard=on            # + keyboard teleop, TX still off
+just vehicle-interface tx=on keyboard=on      # TX live: this drives the cart
+just vehicle-interface can=vcan0 keyboard=on  # bench, against mock_vcu
+just vehicle-interface converter=on           # + robot_state_publisher + velocity converter
 ```
 
-This launch file starts both the actuator and velocity report nodes with the appropriate parameters and topic remappings.
+which wraps:
+
+```bash
+ros2 launch golfcart_vehicle_launch vehicle_interface_standalone.launch.xml \
+    can_interface:=can0 tx_enabled:=false manual_control:=false
+```
+
+`tx_enabled` defaults to false everywhere: the node runs its full logic and
+publishes `/vehicle/status/*`, but skips the socket write, so the cart cannot be
+commanded into motion until you ask for it.
+
+The keyboard controller runs in a tmux session of its own — attach with
+`tmux attach -t golfcart-teleop`, detach with `Ctrl-b d`. It needs `tmux`
+installed; the wrapper fails with an install hint if it is missing.
+
+See [docs/design/vehicle_interface_standalone.md](../../../docs/design/vehicle_interface_standalone.md).
 
 ### Integration with Autoware
 
