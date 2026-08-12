@@ -72,6 +72,7 @@ pub fn spawn(
     report_timeout: Duration,
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
+    steering_sign: f32,
     state: Arc<SharedState>,
     running: Arc<AtomicBool>,
 ) -> Result<CanThreads> {
@@ -109,6 +110,7 @@ pub fn spawn(
                 report_timeout,
                 steer_limits,
                 gear_config,
+                steering_sign,
             )
         })?;
 
@@ -272,6 +274,7 @@ fn tx_loop(
     report_timeout: Duration,
     steer_limits: SteerLimits,
     gear_config: GearShiftConfig,
+    steering_sign: f32,
 ) {
     if !tx_enabled {
         log_warn!(
@@ -424,6 +427,7 @@ fn tx_loop(
             } else {
                 None
             },
+            steering_sign,
         );
         // Skip the actual socket write when TX is administratively disabled.
         // We still run the rest of the loop so state (gear/blinker echo,
@@ -565,6 +569,7 @@ fn build_frames(
     slew_limited_tire_rad: f32,
     actual_gear: Gear,
     shift_brake_decel_mps2: Option<f32>,
+    steering_sign: f32,
 ) -> [(u32, [u8; 8]); 4] {
     let chksum = checksum_stub();
     let driving = mode == TxMode::Driving;
@@ -649,7 +654,9 @@ fn build_frames(
     let eps = AdsVcuEps::new(
         driving && !parked,
         if authority { cmd.eps_mode.to_raw() } else { EpsMode::Invalid.to_raw() },
-        if driving { tire_rad.to_degrees() } else { 0.0 },
+        // Autoware's REP-103 sign (positive = left) converted to the vendor's
+        // (positive = right) on the way out - see `invert_steering`.
+        if driving { steering_sign * tire_rad.to_degrees() } else { 0.0 },
         0.0,
         chksum,
     )
@@ -815,6 +822,9 @@ mod protection_tests {
     use crate::state::CommandState;
     use std::time::Instant;
 
+    /// Steering sign for tests that are not about the sign itself.
+    const NO_FLIP: f32 = 1.0;
+
     fn driving_cmd() -> CommandState {
         let mut c = CommandState::default();
         c.last_control_at = Some(Instant::now());
@@ -832,7 +842,7 @@ mod protection_tests {
     fn negative_speed_never_reaches_the_wire() {
         let mut c = driving_cmd();
         c.target_speed_mps = -3.0; // reverse is gear R, never a negative target
-        let (mtr, _) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None));
+        let (mtr, _) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None, NO_FLIP));
         assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
     }
 
@@ -840,7 +850,7 @@ mod protection_tests {
     fn nan_speed_folds_to_zero() {
         let mut c = driving_cmd();
         c.target_speed_mps = f32::NAN;
-        let (mtr, _) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None));
+        let (mtr, _) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None, NO_FLIP));
         assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
     }
 
@@ -856,6 +866,7 @@ mod protection_tests {
             0.3, // slew limiter already tracking a non-zero angle
             Gear::Parking,
             None,
+            NO_FLIP,
         ));
         assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
         assert_eq!(eps.ads_vcu_target_tire_angle(), 0.0);
@@ -868,7 +879,7 @@ mod protection_tests {
         // Guard against the parking pin being over-eager.
         let mut c = driving_cmd();
         c.target_speed_mps = 2.0;
-        let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.2, Gear::Drive, None));
+        let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.2, Gear::Drive, None, NO_FLIP));
         assert!((mtr.ads_vcu_target_speed() - 2.0).abs() < 0.05);
         assert!((eps.ads_vcu_target_tire_angle() - 0.2_f32.to_degrees()).abs() < 0.5);
     }
@@ -879,7 +890,7 @@ mod protection_tests {
         let mut c = driving_cmd();
         c.target_speed_mps = 2.0;
         c.target_tire_angle_rad = 0.3;
-        let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Idle, 0, 0.3, Gear::Drive, None));
+        let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Idle, 0, 0.3, Gear::Drive, None, NO_FLIP));
         assert_eq!(mtr.ads_vcu_target_speed(), 0.0);
         assert_eq!(eps.ads_vcu_target_tire_angle(), 0.0);
         assert!(!bool::from(mtr.ads_vcu_motor_en()));
@@ -903,9 +914,20 @@ mod heartbeat_tests {
     use crate::dbc::{AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, Gear};
     use crate::state::CommandState;
 
+    /// Steering sign for tests that are not about the sign itself.
+    const NO_FLIP: f32 = 1.0;
+
     /// MTR, BRK, EPS, VEHICLE payloads for an idle tick with rolling counter 0x5F.
     fn idle_frames() -> [(u32, [u8; 8]); 4] {
-        build_frames(&CommandState::default(), TxMode::Idle, 0x5F, 0.0, Gear::Parking, None)
+        build_frames(
+            &CommandState::default(),
+            TxMode::Idle,
+            0x5F,
+            0.0,
+            Gear::Parking,
+            None,
+            NO_FLIP,
+        )
     }
 
     #[test]
@@ -938,6 +960,7 @@ mod heartbeat_tests {
                 0.0,
                 Gear::Parking,
                 None,
+                NO_FLIP,
             );
             let veh = AdsVcuVehicle::try_from(frames[3].1.as_slice()).expect("VEHICLE decodes");
             assert_eq!(veh.ads_vcu_ads_status_raw(), 1, "Ads_Status in {mode:?}");
@@ -963,12 +986,64 @@ mod heartbeat_tests {
         // The zeroing must not leak into the modes we need while driving.
         let mut c = CommandState::default();
         c.last_control_at = Some(std::time::Instant::now());
-        let frames = build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None);
+        let frames = build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None, NO_FLIP);
         let mtr = AdsVcuMtr::try_from(frames[0].1.as_slice()).expect("MTR decodes");
         let brk = AdsVcuBrk::try_from(frames[1].1.as_slice()).expect("BRK decodes");
         let eps = AdsVcuEps::try_from(frames[2].1.as_slice()).expect("EPS decodes");
         assert!(bool::from(mtr.ads_vcu_mtr_mode()), "speed control");
         assert_eq!(brk.ads_vcu_brk_mode_raw(), 2, "pressure control");
         assert_eq!(eps.ads_vcu_eps_mode_raw(), 1, "front-wheel steering");
+    }
+}
+
+#[cfg(test)]
+mod steering_sign_tests {
+    //! Autoware counts a positive tire angle to the left (REP-103); ROOTS counts
+    //! it to the right — the vendor's own bench simulator maps its right-turn key
+    //! to a positive `Ads_Vcu_Target_Tire_Angle`. The sign therefore flips at the
+    //! CAN boundary, which is what `invert_steering` controls.
+
+    use super::{build_frames, TxMode};
+    use crate::dbc::{AdsVcuEps, Gear};
+    use crate::state::CommandState;
+    use std::time::Instant;
+
+    const FLIP: f32 = -1.0;
+    const NO_FLIP: f32 = 1.0;
+
+    fn eps_degrees(tire_rad: f32, sign: f32) -> f32 {
+        let mut c = CommandState::default();
+        c.last_control_at = Some(Instant::now());
+        c.target_tire_angle_rad = tire_rad;
+        let frames = build_frames(&c, TxMode::Driving, 0, tire_rad, Gear::Drive, None, sign);
+        AdsVcuEps::try_from(frames[2].1.as_slice())
+            .expect("EPS decodes")
+            .ads_vcu_target_tire_angle()
+    }
+
+    #[test]
+    fn autoware_left_becomes_vendor_negative() {
+        // +0.2 rad is a left turn for Autoware, so it must leave as negative deg.
+        let deg = eps_degrees(0.2, FLIP);
+        assert!(deg < 0.0, "left turn should be negative on the wire, got {deg}");
+        assert!((deg + 0.2_f32.to_degrees()).abs() < 0.5, "magnitude preserved");
+    }
+
+    #[test]
+    fn autoware_right_becomes_vendor_positive() {
+        let deg = eps_degrees(-0.2, FLIP);
+        assert!(deg > 0.0, "right turn should be positive on the wire, got {deg}");
+    }
+
+    #[test]
+    fn flip_disabled_passes_the_sign_through() {
+        assert!(eps_degrees(0.2, NO_FLIP) > 0.0);
+        assert!(eps_degrees(-0.2, NO_FLIP) < 0.0);
+    }
+
+    #[test]
+    fn zero_is_unaffected_by_the_flip() {
+        // -0.0 would still decode as 0, but be explicit: straight stays straight.
+        assert_eq!(eps_degrees(0.0, FLIP), 0.0);
     }
 }

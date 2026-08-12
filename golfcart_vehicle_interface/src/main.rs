@@ -44,6 +44,7 @@ fn main() -> Result<()> {
         Duration::from_millis(params.report_timeout_ms),
         steer_limits,
         gear_config,
+        node::steering_sign(&params),
         Arc::clone(&state),
         Arc::clone(&running),
     ) {

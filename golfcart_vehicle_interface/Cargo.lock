@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostic_msgs"
-version = "4.9.1"
+version = "4.9.0"
 dependencies = [
  "rosidl_runtime_rs",
  "std_msgs",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "std_msgs"
-version = "4.9.1"
+version = "4.9.0"
 dependencies = [
  "builtin_interfaces",
  "rosidl_runtime_rs",
@@ -1490,23 +1490,23 @@ version = "1.0.6"
 
 [[patch.unused]]
 name = "geometry_msgs"
-version = "4.9.1"
+version = "4.9.0"
 
 [[patch.unused]]
 name = "nav_msgs"
-version = "4.9.1"
+version = "4.9.0"
 
 [[patch.unused]]
 name = "sensor_msgs"
-version = "4.9.1"
+version = "4.9.0"
 
 [[patch.unused]]
 name = "std_srvs"
-version = "4.9.1"
+version = "4.9.0"
 
 [[patch.unused]]
 name = "tf2_msgs"
-version = "0.25.20"
+version = "0.25.18"
 
 [[patch.unused]]
 name = "tier4_control_msgs"
@@ -1522,4 +1522,4 @@ version = "2.2.1"
 
 [[patch.unused]]
 name = "visualization_msgs"
-version = "4.9.1"
+version = "4.9.0"

@@ -298,6 +298,7 @@ impl VehicleInterfaceNode {
 
         // ----- Publish timer: read status, emit Autoware reports ------------
         let publish_period = Duration::from_secs_f64(1.0 / params.publish_rate_hz);
+        let steering_sign = steering_sign(params);
         let report_timeout = Duration::from_millis(params.report_timeout_ms);
         let frame_id = params.frame_id.clone();
         let timer_state = Arc::clone(&state);
@@ -312,7 +313,14 @@ impl VehicleInterfaceNode {
         };
         let timer_clock = node.get_clock();
         let publish_timer = node.create_timer_repeating(publish_period, move || {
-            publish_status(&timer_state, &timer_pubs, &frame_id, &timer_clock, report_timeout);
+            publish_status(
+                &timer_state,
+                &timer_pubs,
+                &frame_id,
+                &timer_clock,
+                report_timeout,
+                steering_sign,
+            );
         })?;
 
         // Diagnostics: 1 Hz roll-up of subsystem health for system_error_monitor.
@@ -363,12 +371,24 @@ struct Publishers {
     actuation: Publisher<ActuationStatusStamped>,
 }
 
+/// +1.0 or -1.0, from the `invert_steering` parameter. Autoware counts a
+/// positive tire angle to the left (REP-103), ROOTS to the right, so the value
+/// changes sign at the CAN boundary in both directions.
+pub fn steering_sign(params: &Params) -> f32 {
+    if params.invert_steering {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 fn publish_status(
     state: &Arc<SharedState>,
     pubs: &Publishers,
     frame_id: &str,
     clock: &Clock,
     report_timeout: Duration,
+    steering_sign: f32,
 ) {
     let status = *state.status.lock();
     let cmd = *state.command.lock();
@@ -399,7 +419,9 @@ fn publish_status(
     if let Some(eps) = eps_fresh {
         let _ = pubs.steering.publish(SteeringReport {
             stamp: stamp.clone(),
-            steering_tire_angle: eps.vcu_ads_tire_angle().to_radians(),
+            // Back into Autoware's REP-103 frame (positive = left); the VCU
+            // counts the other way - see `invert_steering`.
+            steering_tire_angle: steering_sign * eps.vcu_ads_tire_angle().to_radians(),
         });
     }
 
@@ -451,7 +473,7 @@ fn publish_status(
             .map(|b| b.vcu_ads_brake_pressure() as f64)
             .unwrap_or(0.0);
         let steer_status = eps_fresh
-            .map(|e| (e.vcu_ads_tire_angle() as f64).to_radians())
+            .map(|e| steering_sign as f64 * (e.vcu_ads_tire_angle() as f64).to_radians())
             .unwrap_or(0.0);
         let _ = pubs.actuation.publish(ActuationStatusStamped {
             header,

@@ -13,3 +13,8 @@
     publish_rate_hz: 50.0
     # Frame ID for VelocityReport.header.
     frame_id: base_link
+    # Autoware counts a positive steering_tire_angle to the LEFT (REP-103);
+    # ROOTS counts it to the right, so the sign is flipped on the way to the
+    # VCU and on the way back from it. Set false only if a VCU build changes
+    # that convention - with the wrong value the cart steers the wrong way.
+    invert_steering: true

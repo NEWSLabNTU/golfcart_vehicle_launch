@@ -271,6 +271,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `max_accel_mps2` | f64 | 2.0 | Cap on forward accel setpoint. |
 | `max_decel_mps2` | f64 | 4.0 | Cap on brake decel setpoint. |
 | `max_tire_angle_rad` | f64 | 0.349 | Cap on tire-angle setpoint magnitude (≈20°). |
+| `invert_steering` | bool | `true` | Flip the tire-angle sign at the CAN boundary. Autoware counts positive to the left (REP-103), ROOTS to the right. Applied to TX setpoints and to the decoded `SteeringReport` / actuation status. |
 | `steer_rate_stopped_rps` | f64 | 0.4 | Slew rate while \|v\| < 0.05 m/s **or** MTR stale. |
 | `steer_rate_low_vel_rps` | f64 | 0.4 | Slew rate while v < `steer_low_vel_thresh_mps`. |
 | `steer_rate_nominal_rps` | f64 | 0.8 | Slew rate at nominal speed. |

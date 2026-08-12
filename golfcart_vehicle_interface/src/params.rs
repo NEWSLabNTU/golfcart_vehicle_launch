@@ -35,6 +35,16 @@ pub struct Params {
     /// Maximum tire-angle setpoint allowed (rad, magnitude). Caps the
     /// front-wheel deflection regardless of what Autoware emits.
     pub max_tire_angle_rad: f32,
+    /// Flip the sign of the tire angle on the way to and from the VCU.
+    ///
+    /// Autoware follows REP-103: a positive `steering_tire_angle` turns left.
+    /// ROOTS counts the other way - the vendor's own bench simulator maps its
+    /// right-turn key to a *positive* `Ads_Vcu_Target_Tire_Angle`. Without the
+    /// flip the cart steers the wrong way, and its reported angle disagrees
+    /// with the command that produced it. Applied to TX setpoints and to the
+    /// `SteeringReport` / actuation status decoded from RX, so both sides stay
+    /// in Autoware's frame. Set false if a future VCU build changes convention.
+    pub invert_steering: bool,
     /// Steering rate limit while stopped (rad/s). Prevents lock-jolt at v=0.
     pub steer_rate_stopped_rps: f32,
     /// Steering rate limit at low velocity (rad/s).
@@ -122,6 +132,12 @@ impl Params {
             .mandatory()?
             .get();
 
+        let invert_steering = node
+            .declare_parameter("invert_steering")
+            .default(true)
+            .mandatory()?
+            .get();
+
         let max_tire_angle_rad = node
             .declare_parameter("max_tire_angle_rad")
             .default(0.349) // ≈ 20°, matches mechanical EPS limit
@@ -177,6 +193,7 @@ impl Params {
             max_accel_mps2: max_accel_mps2 as f32,
             max_decel_mps2: max_decel_mps2 as f32,
             max_tire_angle_rad: max_tire_angle_rad as f32,
+            invert_steering,
             steer_rate_stopped_rps: steer_rate_stopped_rps as f32,
             steer_rate_low_vel_rps: steer_rate_low_vel_rps as f32,
             steer_rate_nominal_rps: steer_rate_nominal_rps as f32,
