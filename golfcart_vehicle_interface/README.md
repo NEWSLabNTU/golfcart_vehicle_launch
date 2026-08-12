@@ -42,9 +42,26 @@ reports and aggregates them:
 
 **Commands go on the wire only in `Autonomous`.** In `Manual` and `Abnormal`
 the four `ADS_VCU_*` frames are still transmitted, but as pure heartbeat: all
-enables `0`, all setpoints `0`, no `Veh_Auto_En`, no `Veh_Estop`, no light
-commands. That heartbeat is what lifts `MTR` and `EPS` out of `Invalid` on the
-VCU side after a restart without commanding anything.
+enables `0`, all setpoints `0`, all mode fields `0`, no `Veh_Auto_En`, no
+`Veh_Estop`, no light commands. That heartbeat is what lifts `MTR` and `EPS`
+out of `Invalid` on the VCU side after a restart without commanding anything.
+
+The one field that is *not* zero is `Ads_Vcu_Ads_Status`, held at `Running` for
+as long as the node transmits. It reports this node's own health, not whether we
+are driving: the VCU reads it as "is the ADS alive and sane" and will not leave
+`Manual` while it says `Error`. The driver presses the AUTO button while we are
+idle, so an idle frame that says `Error` makes the button do nothing. The idle
+heartbeat is byte-identical to the ROOTS bench simulator's, which is the frame
+set the VCU is known to accept:
+
+| Frame | Idle payload |
+|---|---|
+| `RX_ADS_VCU_MTR` (`0x075`) | `00 00 00 00 00 00 00 00` |
+| `RX_ADS_VCU_BRK` (`0x068`) | `00 00 00 00 00 00 00 00` |
+| `RX_ADS_VCU_EPS` (`0x065`) | `00 00 00 00 00 00 00 00` |
+| `RX_ADS_VCU_VEHICLE` (`0x43F`) | `02 00 00 00 00 00 <rolling> 00` |
+
+`can_io::heartbeat_tests` asserts exactly these bytes.
 
 A frame older than `report_timeout_ms` counts as missing — a cached state from
 a VCU that has gone quiet says nothing about who holds the vehicle now.

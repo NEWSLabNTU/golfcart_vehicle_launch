@@ -18,8 +18,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::dbc::{
-    checksum_stub, AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, BlinkerCtrl, BrakeMode, Gear,
-    Messages, VcuAdsVehicle,
+    checksum_stub, AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, BlinkerCtrl, BrakeMode, EpsMode,
+    Gear, Messages, VcuAdsVehicle,
 };
 use crate::state::{CommandState, SharedState, VehicleMode};
 
@@ -32,6 +32,10 @@ const NODE_NAME: &str = "golfcart_vehicle_interface";
 /// ≥2.8 ~100%. We sit in segment 3 for a firm, definite stop. The vehicle-frame
 /// `Ads_Vcu_Veh_Estop` bit is also asserted as a redundant max-decel path.
 const SAFETY_BRAKE_DECEL_MPS2: f32 = 3.0;
+
+/// `Ads_Vcu_Ads_Status`: 1 = Running, 0 = Error. Held at Running for as long as
+/// this node transmits — see the note in `build_frames`.
+const ADS_STATUS_RUNNING: u8 = 1;
 
 pub struct CanThreads {
     pub rx: JoinHandle<()>,
@@ -598,7 +602,10 @@ fn build_frames(
     let motor = AdsVcuMtr::new(
         motor_active,
         driving,
-        cmd.motor_mode.as_bool(),
+        // Mode bits are a claim about how we intend to drive, so they only go
+        // out with authority. Idle frames are then byte-identical to the ROOTS
+        // simulator's, which is what the VCU accepts before handing over.
+        authority && cmd.motor_mode.as_bool(),
         actual_gear.to_raw(),
         if motor_active { cmd.target_throttle_pct } else { 0.0 },
         if motor_active { cmd.target_acceleration_mps2.max(0.0) } else { 0.0 },
@@ -618,7 +625,9 @@ fn build_frames(
         (TxMode::Driving, None) => cmd.target_deceleration_mps2,
         _ => 0.0,
     };
-    let brake_mode = if safety_brake || shift_braking {
+    let brake_mode = if !authority {
+        BrakeMode::Invalid
+    } else if safety_brake || shift_braking {
         BrakeMode::Pressure
     } else {
         cmd.brake_mode
@@ -639,7 +648,7 @@ fn build_frames(
     // Use the slew-limited tire angle so EPS sees a continuous trajectory.
     let eps = AdsVcuEps::new(
         driving && !parked,
-        cmd.eps_mode.to_raw(),
+        if authority { cmd.eps_mode.to_raw() } else { EpsMode::Invalid.to_raw() },
         if driving { tire_rad.to_degrees() } else { 0.0 },
         0.0,
         chksum,
@@ -647,9 +656,14 @@ fn build_frames(
     .expect("AdsVcuEps fields are clamped at the call site");
 
     // Vehicle frame: hand authority to VCU only when we're trying to do
-    // something. Ads_Status reports "Running" only while genuinely driving;
-    // anything else is "Error" so the VCU sees the abnormal state. Hazard
-    // blinker overrides the user blinker on safety-brake.
+    // something. Hazard blinker overrides the user blinker on safety-brake.
+    //
+    // `Ads_Status` is this node's own health, NOT whether we are driving. The
+    // VCU reads it as "is the ADS alive and sane" and refuses to leave Manual
+    // while it says Error - so reporting Error until we drive made the AUTO
+    // button impossible to use, since the driver presses it while we are idle.
+    // The ROOTS simulator holds it Running unconditionally; so do we, for as
+    // long as this node is on the bus at all.
     //
     // Without authority (the vehicle is in manual or an abnormal state) every
     // actuating field goes out zeroed — lights, prompts and the e-stop bit
@@ -665,7 +679,7 @@ fn build_frames(
     };
     let veh = AdsVcuVehicle::new(
         authority,
-        if driving { 1 } else { 0 },
+        ADS_STATUS_RUNNING,
         false,
         authority && (cmd.estop || safety_brake),
         blinker.to_raw(),
@@ -871,5 +885,90 @@ mod protection_tests {
         assert!(!bool::from(mtr.ads_vcu_motor_en()));
         assert!(!bool::from(mtr.ads_vcu_gear_en()));
         assert!(!bool::from(eps.ads_vcu_eps_en()));
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    //! The idle heartbeat is what the driver's AUTO button is judged against:
+    //! the VCU only leaves `Manual` if the ADS frames on the bus look right
+    //! while it is still idle.
+    //!
+    //! The expected bytes are the ones captured from the ROOTS bench simulator
+    //! (`Roots_ipc_can_test.py`) on the run where the AUTO button worked —
+    //! `candump` on `can0`, 2026-08-12. Our own capture from the same session
+    //! differed in exactly the fields fixed here, and the VCU stayed `Manual`.
+
+    use super::{build_frames, TxMode};
+    use crate::dbc::{AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, Gear};
+    use crate::state::CommandState;
+
+    /// MTR, BRK, EPS, VEHICLE payloads for an idle tick with rolling counter 0x5F.
+    fn idle_frames() -> [(u32, [u8; 8]); 4] {
+        build_frames(&CommandState::default(), TxMode::Idle, 0x5F, 0.0, Gear::Parking, None)
+    }
+
+    #[test]
+    fn idle_heartbeat_matches_the_reference_capture() {
+        let frames = idle_frames();
+        assert_eq!(frames[0].1, [0x00; 8], "MTR heartbeat");
+        assert_eq!(frames[1].1, [0x00; 8], "BRK heartbeat");
+        assert_eq!(frames[2].1, [0x00; 8], "EPS heartbeat");
+        assert_eq!(
+            frames[3].1,
+            [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5F, 0x00],
+            "VEHICLE heartbeat: Ads_Status=Running, rolling counter, nothing else"
+        );
+    }
+
+    #[test]
+    fn ads_status_is_running_in_every_mode() {
+        // It reports this node's health, not whether we are driving. Held at
+        // Running so the VCU will hand over when the driver asks it to.
+        for mode in [
+            TxMode::Idle,
+            TxMode::EngagedWaiting,
+            TxMode::Driving,
+            TxMode::SafetyBrake,
+        ] {
+            let frames = build_frames(
+                &CommandState::default(),
+                mode,
+                0,
+                0.0,
+                Gear::Parking,
+                None,
+            );
+            let veh = AdsVcuVehicle::try_from(frames[3].1.as_slice()).expect("VEHICLE decodes");
+            assert_eq!(veh.ads_vcu_ads_status_raw(), 1, "Ads_Status in {mode:?}");
+        }
+    }
+
+    #[test]
+    fn idle_claims_no_mode() {
+        // Mode bits are a claim about how we intend to drive. Sending them
+        // while the driver holds the vehicle is what made our idle frames
+        // differ from the reference.
+        let frames = idle_frames();
+        let mtr = AdsVcuMtr::try_from(frames[0].1.as_slice()).expect("MTR decodes");
+        let brk = AdsVcuBrk::try_from(frames[1].1.as_slice()).expect("BRK decodes");
+        let eps = AdsVcuEps::try_from(frames[2].1.as_slice()).expect("EPS decodes");
+        assert!(!bool::from(mtr.ads_vcu_mtr_mode()));
+        assert_eq!(brk.ads_vcu_brk_mode_raw(), 0);
+        assert_eq!(eps.ads_vcu_eps_mode_raw(), 0);
+    }
+
+    #[test]
+    fn driving_still_claims_its_modes() {
+        // The zeroing must not leak into the modes we need while driving.
+        let mut c = CommandState::default();
+        c.last_control_at = Some(std::time::Instant::now());
+        let frames = build_frames(&c, TxMode::Driving, 0, 0.0, Gear::Drive, None);
+        let mtr = AdsVcuMtr::try_from(frames[0].1.as_slice()).expect("MTR decodes");
+        let brk = AdsVcuBrk::try_from(frames[1].1.as_slice()).expect("BRK decodes");
+        let eps = AdsVcuEps::try_from(frames[2].1.as_slice()).expect("EPS decodes");
+        assert!(bool::from(mtr.ads_vcu_mtr_mode()), "speed control");
+        assert_eq!(brk.ads_vcu_brk_mode_raw(), 2, "pressure control");
+        assert_eq!(eps.ads_vcu_eps_mode_raw(), 1, "front-wheel steering");
     }
 }
