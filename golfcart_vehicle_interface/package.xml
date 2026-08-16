@@ -15,6 +15,18 @@
   <depend>autoware_vehicle_msgs</depend>
   <depend>tier4_vehicle_msgs</depend>
 
+  <!--
+    Not used by this package. rclrs 0.7.0 vendors bindings for test_msgs
+    (rclrs-0.7.0/src/vendor/test_msgs/) and links them unconditionally, so the
+    package fails to link without it:
+
+      rust-lld: error: unable to find library -ltest_msgs__rosidl_typesupport_c
+
+    Declared here so rosdep installs it. Remove only when rclrs stops linking
+    it, not because it looks unused.
+  -->
+  <depend>test_msgs</depend>
+
   <export>
     <build_type>ament_cargo</build_type>
   </export>
