@@ -12,9 +12,9 @@
     velocity_converter  twist for the Autoware localization / planning chain
 
   Keyboard control is deliberately NOT here: it reads a raw tty, which no
-  launch-managed process has. Run `just manual-control` in a second terminal.
+  launch-managed process has. Run `just vehicle manual-control` in a second terminal.
 
-  Driven from `just vehicle-interface`; see docs/design/vehicle_interface_standalone.md.
+  Driven from `just vehicle interface`; see docs/design/vehicle_interface_standalone.md.
 -->
 <launch>
   <arg name="can_interface" default="can0" description="SocketCAN interface (can0 for the real bus, vcan0 for the bench)"/>

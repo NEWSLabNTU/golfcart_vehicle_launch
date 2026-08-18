@@ -75,10 +75,10 @@ Inside the Autoware stack the interface comes up with the rest of the system.
 On its own, use the recipe:
 
 ```bash
-just vehicle-interface                # CAN RX only, nothing can move
-just vehicle-interface can=vcan0      # bench, against mock_vcu
-just vehicle-interface tx=on          # TX live: this drives the cart
-just vehicle-interface converter=on   # + robot_state_publisher + velocity converter
+just vehicle interface                # CAN RX only, nothing can move
+just vehicle interface can=vcan0      # bench, against mock_vcu
+just vehicle interface tx=on          # TX live: this drives the cart
+just vehicle interface converter=on   # + robot_state_publisher + velocity converter
 ```
 
 which wraps:
@@ -95,7 +95,7 @@ commanded into motion until you ask for it.
 Keyboard control is a separate recipe, run in a second terminal:
 
 ```bash
-just manual-control
+just vehicle manual-control
 ```
 
 It is not a node in this launch file. Keys are read from a raw tty, which no

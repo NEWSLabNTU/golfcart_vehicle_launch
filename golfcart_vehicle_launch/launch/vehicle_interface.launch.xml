@@ -9,7 +9,7 @@
     only channel that survives the trip — `just launch tx=on` sets it, and
     config/vehicle.conf holds the resting value.
 
-    vehicle_interface_standalone.launch.xml (`just vehicle-interface`) bypasses
+    vehicle_interface_standalone.launch.xml (`just vehicle interface`) bypasses
     Autoware and passes tx_enabled explicitly, so the env default is unused there.
   -->
   <arg name="tx_enabled" default="$(env GOLFCART_TX_ENABLED false)" description="Master enable for CAN TX. Default false for safety; set true to actually drive the vehicle."/>
