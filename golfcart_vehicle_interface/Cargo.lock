@@ -167,7 +167,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autoware_control_msgs"
-version = "1.11.0"
+version = "0.0.0"
 dependencies = [
  "builtin_interfaces",
  "rosidl_runtime_rs",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "autoware_vehicle_msgs"
-version = "1.11.0"
+version = "0.0.0"
 dependencies = [
  "builtin_interfaces",
  "rosidl_runtime_rs",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "builtin_interfaces"
-version = "1.2.3"
+version = "0.0.0"
 dependencies = [
  "rosidl_runtime_rs",
 ]
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostic_msgs"
-version = "4.9.1"
+version = "0.0.0"
 dependencies = [
  "rosidl_runtime_rs",
  "std_msgs",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "std_msgs"
-version = "4.9.1"
+version = "0.0.0"
 dependencies = [
  "builtin_interfaces",
  "rosidl_runtime_rs",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "tier4_vehicle_msgs"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "builtin_interfaces",
  "rosidl_runtime_rs",
@@ -1462,32 +1462,32 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
 name = "action_msgs"
-version = "1.2.3"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "autoware_common_msgs"
-version = "1.3.0"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "autoware_planning_msgs"
-version = "1.11.0"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "geometry_msgs"
-version = "4.9.1"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "nav_msgs"
-version = "4.9.1"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "test_msgs"
-version = "1.2.3"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "tier4_control_msgs"
-version = "0.1.0"
+version = "0.0.0"
 
 [[patch.unused]]
 name = "unique_identifier_msgs"
-version = "2.2.1"
+version = "0.0.0"
