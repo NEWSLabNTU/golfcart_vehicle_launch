@@ -13,7 +13,13 @@
   <export>
     <build_type>ament_cmake</build_type>
   </export>
-  <depend>esc_control</depend>
+
+  <!--
+    esc_control was the PWM/ESC actuator package of the pre-Turing-Drive
+    interface. It was removed when the actuator path became the CAN vehicle
+    interface, but the declaration stayed, and rosdep has reported it as
+    unresolvable ever since. Nothing under src/ references it.
+  -->
 
   <exec_depend>autoware_control_msgs</exec_depend>
   <exec_depend>autoware_vehicle_msgs</exec_depend>
