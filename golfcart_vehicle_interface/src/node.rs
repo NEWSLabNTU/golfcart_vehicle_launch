@@ -70,6 +70,7 @@ impl VehicleInterfaceNode {
         let max_speed = params.max_speed_mps;
         let max_accel = params.max_accel_mps2;
         let max_decel = params.max_decel_mps2;
+        let decel_deadband = params.decel_deadband_mps2;
         let max_tire = params.max_tire_angle_rad;
         let sub_control = {
             let state = Arc::clone(&state);
@@ -85,11 +86,12 @@ impl VehicleInterfaceNode {
                 let speed_cap = max_speed.min(ROOTS_MAX_SPEED_MPS).min(SPEED_MPS_MAX);
                 let speed = clamp_f32((msg.longitudinal.velocity as f32).abs(), 0.0, speed_cap);
 
-                let accel_signed = msg.longitudinal.acceleration as f32;
-                let accel_user = clamp_f32(accel_signed.max(0.0), 0.0, max_accel);
-                let accel = clamp_f32(accel_user, ACCEL_MPS2_MIN, ACCEL_MPS2_MAX);
-                let decel_user = clamp_f32((-accel_signed).max(0.0), 0.0, max_decel);
-                let decel = clamp_f32(decel_user, DECEL_MPS2_MIN, DECEL_MPS2_MAX);
+                let Longitudinal { accel, decel } = split_longitudinal(
+                    msg.longitudinal.acceleration as f32,
+                    max_accel,
+                    max_decel,
+                    decel_deadband,
+                );
 
                 let tire_user = clamp_f32(
                     msg.lateral.steering_tire_angle as f32,
@@ -302,6 +304,7 @@ impl VehicleInterfaceNode {
         // ----- Publish timer: read status, emit Autoware reports ------------
         let publish_period = Duration::from_secs_f64(1.0 / params.publish_rate_hz);
         let steering_sign = steering_sign(params);
+        let wheel_base = params.wheel_base;
         let control_min_rate_hz = params.control_min_rate_hz;
         let report_timeout = Duration::from_millis(params.report_timeout_ms);
         let frame_id = params.frame_id.clone();
@@ -324,6 +327,7 @@ impl VehicleInterfaceNode {
                 &timer_clock,
                 report_timeout,
                 steering_sign,
+                wheel_base,
             );
         })?;
 
@@ -392,6 +396,60 @@ pub fn steering_sign(params: &Params) -> f32 {
     }
 }
 
+/// Acceleration and deceleration setpoints, both non-negative magnitudes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Longitudinal {
+    pub accel: f32,
+    pub decel: f32,
+}
+
+/// Split Autoware's signed longitudinal acceleration into the VCU's separate
+/// `Target_Acceleration` and `Target_Deceleration` setpoints.
+///
+/// Two-stage saturation: user-policy caps first, then the DBC signal ranges so
+/// the encode call never errors.
+pub fn split_longitudinal(
+    accel_signed: f32,
+    max_accel: f32,
+    max_decel: f32,
+    decel_deadband: f32,
+) -> Longitudinal {
+    let accel_user = clamp_f32(accel_signed.max(0.0), 0.0, max_accel);
+    let accel = clamp_f32(accel_user, ACCEL_MPS2_MIN, ACCEL_MPS2_MAX);
+    // Any deceleration > 0 cuts motor torque (the VCU's decel priority, which
+    // `build_frames` mirrors), but ROOTS does not brake below 1.2 m/s². A
+    // small negative from PID dither at cruise would therefore only switch
+    // the motor off, not slow the cart; inside the deadband send none, keep
+    // the motor on, and let the speed-mode target do the slowing. Values
+    // beyond it pass through unchanged: lifting them into the 1.2 m/s²
+    // brake stage is a tuning decision that needs the vehicle.
+    let decel_requested = (-accel_signed).max(0.0);
+    let decel_requested = if decel_requested < decel_deadband {
+        0.0
+    } else {
+        decel_requested
+    };
+    let decel_user = clamp_f32(decel_requested, 0.0, max_decel);
+    let decel = clamp_f32(decel_user, DECEL_MPS2_MIN, DECEL_MPS2_MAX);
+    Longitudinal { accel, decel }
+}
+
+/// Yaw rate (rad/s) for `VelocityReport.heading_rate`, from the kinematic
+/// bicycle model: `v * tan(delta) / wheel_base`.
+///
+/// `tire_angle_rad` must already be in Autoware's frame (positive = left, after
+/// `invert_steering`), so a left turn going forward gives a positive yaw rate,
+/// matching REP-103 and the `SteeringReport` published beside it. The signed
+/// velocity carries reverse: backing up with the wheels left turns the nose
+/// right. `None` means the EPS report is stale; the rate is then 0.0 rather than
+/// a guess from an angle nobody has confirmed recently.
+pub fn heading_rate(velocity_mps: f32, tire_angle_rad: Option<f32>, wheel_base_m: f32) -> f32 {
+    match tire_angle_rad {
+        Some(delta) => velocity_mps * delta.tan() / wheel_base_m,
+        None => 0.0,
+    }
+}
+
 fn publish_status(
     state: &Arc<SharedState>,
     pubs: &Publishers,
@@ -399,6 +457,7 @@ fn publish_status(
     clock: &Clock,
     report_timeout: Duration,
     steering_sign: f32,
+    wheel_base: f32,
 ) {
     let status = *state.status.lock();
     let cmd = *state.command.lock();
@@ -409,16 +468,25 @@ fn publish_status(
     let brk_fresh = status.brk.filter(|_| fresh(status.brk_at));
     let veh_fresh = status.veh.filter(|_| fresh(status.veh_at));
 
+    // Tire angle in Autoware's REP-103 frame (positive = left); the VCU
+    // counts the other way - see `invert_steering`. Shared by SteeringReport
+    // and the heading rate so the two can never disagree on sign.
+    let tire_angle_rad = eps_fresh.map(|eps| steering_sign * eps.vcu_ads_tire_angle().to_radians());
+
     if let Some(mtr) = mtr_fresh {
         let header = std_msgs::msg::Header {
             stamp: stamp.clone(),
             frame_id: frame_id.to_string(),
         };
+        let velocity = mtr.vcu_ads_vehicle_speed();
         let _ = pubs.velocity.publish(VelocityReport {
             header,
-            longitudinal_velocity: mtr.vcu_ads_vehicle_speed(),
+            longitudinal_velocity: velocity,
             lateral_velocity: 0.0,
-            heading_rate: 0.0,
+            // The VCU reports no yaw rate, so derive one from the steering.
+            // Consumers such as vehicle_velocity_converter pass it on as the
+            // twist's angular z; a hardcoded 0.0 told them the cart never turns.
+            heading_rate: heading_rate(velocity, tire_angle_rad, wheel_base),
         });
         let _ = pubs.gear.publish(GearReport {
             stamp: stamp.clone(),
@@ -426,12 +494,10 @@ fn publish_status(
         });
     }
 
-    if let Some(eps) = eps_fresh {
+    if let Some(steering_tire_angle) = tire_angle_rad {
         let _ = pubs.steering.publish(SteeringReport {
             stamp: stamp.clone(),
-            // Back into Autoware's REP-103 frame (positive = left); the VCU
-            // counts the other way - see `invert_steering`.
-            steering_tire_angle: steering_sign * eps.vcu_ads_tire_angle().to_radians(),
+            steering_tire_angle,
         });
     }
 
@@ -884,5 +950,120 @@ fn clamp_f32(v: f32, min: f32, max: f32) -> f32 {
         }
     } else {
         v.max(min).min(max)
+    }
+}
+
+#[cfg(test)]
+mod heading_rate_tests {
+    use super::heading_rate;
+
+    const WHEEL_BASE: f32 = 2.061;
+    const LEFT: f32 = 0.2; // rad, Autoware frame: positive is left
+
+    fn expected(v: f32, delta: f32) -> f32 {
+        v * delta.tan() / WHEEL_BASE
+    }
+
+    #[test]
+    fn straight_is_zero() {
+        assert_eq!(heading_rate(3.0, Some(0.0), WHEEL_BASE), 0.0);
+    }
+
+    #[test]
+    fn left_forward_is_positive() {
+        let r = heading_rate(3.0, Some(LEFT), WHEEL_BASE);
+        assert!(r > 0.0, "left turn forward must be a positive yaw rate, got {r}");
+        assert!((r - expected(3.0, LEFT)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn right_forward_is_negative() {
+        let r = heading_rate(3.0, Some(-LEFT), WHEEL_BASE);
+        assert!(r < 0.0, "right turn forward must be a negative yaw rate, got {r}");
+        assert!((r - expected(3.0, -LEFT)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn reverse_flips_the_sign() {
+        // Backing up with the wheels turned left swings the nose right.
+        let r = heading_rate(-1.5, Some(LEFT), WHEEL_BASE);
+        assert!(r < 0.0, "left wheels in reverse must be a negative yaw rate, got {r}");
+        assert!((r - expected(-1.5, LEFT)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn stale_steering_reports_zero() {
+        assert_eq!(heading_rate(3.0, None, WHEEL_BASE), 0.0);
+    }
+
+    #[test]
+    fn stopped_is_zero_whatever_the_wheels_do() {
+        assert_eq!(heading_rate(0.0, Some(LEFT), WHEEL_BASE), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod longitudinal_tests {
+    //! A negative acceleration becomes `Target_Deceleration > 0`, and any
+    //! deceleration makes the VCU (and `build_frames`) cut motor torque. The
+    //! deadband keeps Autoware's PID jitter around zero at cruise from
+    //! toggling the motor.
+
+    use super::{split_longitudinal, Longitudinal};
+    use crate::can_io::motor_frame_enabled;
+    use crate::dbc::Gear;
+    use crate::state::CommandState;
+    use std::time::Instant;
+
+    const MAX_ACCEL: f32 = 2.0;
+    const MAX_DECEL: f32 = 4.0;
+    const DEADBAND: f32 = 0.2;
+
+    fn split(a: f32) -> Longitudinal {
+        split_longitudinal(a, MAX_ACCEL, MAX_DECEL, DEADBAND)
+    }
+
+    /// Whether the motor frame goes out enabled for this split while driving.
+    fn motor_on(l: Longitudinal) -> bool {
+        let mut c = CommandState::default();
+        c.last_control_at = Some(Instant::now());
+        c.target_speed_mps = 2.0;
+        c.target_acceleration_mps2 = l.accel;
+        c.target_deceleration_mps2 = l.decel;
+        motor_frame_enabled(&c, Gear::Drive)
+    }
+
+    #[test]
+    fn small_decel_is_inside_the_deadband() {
+        let l = split(-0.1);
+        assert_eq!(l, Longitudinal { accel: 0.0, decel: 0.0 });
+        assert!(motor_on(l), "jitter below the deadband must not cut the motor");
+    }
+
+    #[test]
+    fn decel_beyond_the_deadband_passes_through() {
+        let l = split(-0.5);
+        assert_eq!(l.accel, 0.0);
+        assert!((l.decel - 0.5).abs() < 1e-6, "not remapped, got {}", l.decel);
+        assert!(!motor_on(l), "a real decel cuts the motor, as the VCU does");
+    }
+
+    #[test]
+    fn positive_is_acceleration() {
+        let l = split(0.3);
+        assert!((l.accel - 0.3).abs() < 1e-6);
+        assert_eq!(l.decel, 0.0);
+        assert!(motor_on(l));
+    }
+
+    #[test]
+    fn zero_deadband_restores_pass_through() {
+        let l = split_longitudinal(-0.1, MAX_ACCEL, MAX_DECEL, 0.0);
+        assert!((l.decel - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decel_is_still_capped() {
+        assert_eq!(split(-10.0).decel, MAX_DECEL);
     }
 }

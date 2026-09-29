@@ -663,6 +663,18 @@ fn rate_guard(cmd: &CommandState, min_rate_hz: f32, now: Instant) -> RateGuard {
     }
 }
 
+/// Whether `build_frames` sends the motor frame enabled while `Driving` with no
+/// shift pending: the rule that lets tests see the effect of a setpoint split.
+#[cfg(test)]
+pub(crate) fn motor_frame_enabled(cmd: &CommandState, gear: Gear) -> bool {
+    let frames = build_frames(cmd, TxMode::Driving, 0, 0.0, gear, None, 1.0);
+    bool::from(
+        AdsVcuMtr::try_from(frames[0].1.as_slice())
+            .expect("MTR decodes")
+            .ads_vcu_motor_en(),
+    )
+}
+
 fn build_frames(
     cmd: &CommandState,
     mode: TxMode,

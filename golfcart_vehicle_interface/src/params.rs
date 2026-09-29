@@ -1,6 +1,6 @@
 //! ROS parameter loading.
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use rclrs::Node;
 use std::sync::Arc;
 
@@ -39,6 +39,14 @@ pub struct Params {
     pub max_accel_mps2: f32,
     /// Maximum brake deceleration setpoint allowed (m/s², unsigned).
     pub max_decel_mps2: f32,
+    /// Commanded decelerations smaller than this (m/s², magnitude) are sent as
+    /// no deceleration at all. Any `Target_Deceleration > 0` makes the ROOTS
+    /// VCU cut motor torque, yet it does not brake below 1.2 m/s², and
+    /// Autoware's longitudinal PID dithers a few tenths either side of zero at
+    /// cruise - so without a deadband the motor toggles on and off. Inside the
+    /// deadband the motor stays on and the speed-mode target speed does the
+    /// slowing. 0 disables.
+    pub decel_deadband_mps2: f32,
     /// Maximum tire-angle setpoint allowed (rad, magnitude). Caps the
     /// front-wheel deflection regardless of what Autoware emits.
     pub max_tire_angle_rad: f32,
@@ -52,6 +60,12 @@ pub struct Params {
     /// `SteeringReport` / actuation status decoded from RX, so both sides stay
     /// in Autoware's frame. Set false if a future VCU build changes convention.
     pub invert_steering: bool,
+    /// Front-to-rear axle distance (m). Used only to derive
+    /// `VelocityReport.heading_rate` from the steering report, since the VCU
+    /// reports no yaw rate. The launch passes it from
+    /// `golfcart_vehicle_description/config/vehicle_info.param.yaml`, the file
+    /// the rest of Autoware reads; the default is that file's 2.061.
+    pub wheel_base: f32,
     /// Steering rate limit while stopped (rad/s). Prevents lock-jolt at v=0.
     pub steer_rate_stopped_rps: f32,
     /// Steering rate limit at low velocity (rad/s).
@@ -145,11 +159,36 @@ impl Params {
             .mandatory()?
             .get();
 
+        let decel_deadband_mps2: f64 = node
+            .declare_parameter("decel_deadband_mps2")
+            .default(0.2)
+            .mandatory()?
+            .get();
+        // Negative would be meaningless; at or past 1.2 m/s² the deadband
+        // would swallow the first brake stage and every gentle planner stop
+        // with it.
+        ensure!(
+            decel_deadband_mps2.is_finite() && (0.0..1.2).contains(&decel_deadband_mps2),
+            "`decel_deadband_mps2` must be in [0, 1.2) m/s², got {decel_deadband_mps2}"
+        );
+
         let invert_steering = node
             .declare_parameter("invert_steering")
             .default(true)
             .mandatory()?
             .get();
+
+        let wheel_base: f64 = node
+            .declare_parameter("wheel_base")
+            .default(2.061) // golfcart_vehicle_description vehicle_info.param.yaml
+            .mandatory()?
+            .get();
+        // Divides the yaw-rate formula: zero or negative would publish inf or a
+        // yaw rate of the wrong sign, which the EKF would then trust.
+        ensure!(
+            wheel_base.is_finite() && wheel_base > 0.0,
+            "`wheel_base` must be a positive length in metres, got {wheel_base}"
+        );
 
         let max_tire_angle_rad = node
             .declare_parameter("max_tire_angle_rad")
@@ -206,8 +245,10 @@ impl Params {
             max_speed_mps: max_speed_mps as f32,
             max_accel_mps2: max_accel_mps2 as f32,
             max_decel_mps2: max_decel_mps2 as f32,
+            decel_deadband_mps2: decel_deadband_mps2 as f32,
             max_tire_angle_rad: max_tire_angle_rad as f32,
             invert_steering,
+            wheel_base: wheel_base as f32,
             steer_rate_stopped_rps: steer_rate_stopped_rps as f32,
             steer_rate_low_vel_rps: steer_rate_low_vel_rps as f32,
             steer_rate_nominal_rps: steer_rate_nominal_rps as f32,

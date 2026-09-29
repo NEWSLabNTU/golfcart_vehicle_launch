@@ -104,14 +104,17 @@ pressure are ignored, so both are always sent as `0` (see
 † `motor_en` drops to `0` (with throttle / accel / speed zeroed) whenever a
 planner deceleration is active (`target_decel > 0`), matching the VCU's
 decel-priority torque cut. `gear_en` stays `1` so the requested gear is always
-known.
+known. A commanded deceleration smaller than `decel_deadband_mps2` is sent as
+`0`, so the motor stays on through the PID's jitter around zero at cruise; see
+[Longitudinal command mapping](#longitudinal-command-mapping).
 
 ### Evaluation precedence
 
 Checked in `TxMode::evaluate`, first match wins:
 
 1. `vehicle_mode != Autonomous` → `Idle` (mode gate — nothing else is consulted)
-2. `fault_latched || estop` → `SafetyBrake`
+2. `fault_latched || estop` → `SafetyBrake`, where `estop` = driver e-stop OR
+   MRM e-stop (see [E-stop sources](#e-stop-sources))
 3. `was_driving && stale` → `SafetyBrake`
 4. `!stale` → `Driving`
 5. else → `EngagedWaiting`
@@ -211,6 +214,39 @@ behaviour, and they constrain what command values are actually honoured.
   CAN FD). Bring the link up with `scripts/setup-physical-can.sh` (see the NAS
   VCU-manual folder for the vendor copy).
 
+## Longitudinal command mapping
+
+Autoware's `Control.longitudinal.acceleration` is signed; the VCU takes two
+magnitudes. A positive value goes to `Ads_Vcu_Target_Acceleration` (capped at
+`max_accel_mps2`), a negative one to `Ads_Vcu_Target_Deceleration` (capped at
+`max_decel_mps2`), in `node::split_longitudinal`.
+
+Any `Target_Deceleration > 0` makes the VCU cut motor torque, and
+`build_frames` mirrors that. But ROOTS does not brake below 1.2 m/s², and
+Autoware's longitudinal PID dithers a few tenths either side of zero while
+cruising. Without a deadband each small negative switched the motor off
+without slowing the cart, and the motor toggled. So a deceleration smaller
+than `decel_deadband_mps2` (default 0.2 m/s²) is sent as none: the motor stays
+on, and the speed-mode target speed does the slowing. At or above the deadband
+the value passes through unchanged.
+
+**Open question: requests between the deadband and 1.2 m/s².** These still cut
+the motor and still do not brake, so the cart coasts. Raising them into the
+1.2 m/s² brake stage, or widening the deadband, would change how every gentle
+planner stop feels, and needs measurements on the vehicle. The parameter is
+validated to `[0, 1.2)` so it can never swallow the first brake stage.
+
+## Heading rate
+
+The VCU reports no yaw rate, so `VelocityReport.heading_rate` is derived from
+the kinematic bicycle model, `v * tan(steering_tire_angle) / wheel_base`
+(`node::heading_rate`). It uses the same REP-103 tire angle as the
+`SteeringReport` published beside it (after `invert_steering`), so a left turn
+going forward is a positive rate, and the signed vehicle speed makes reverse
+turn the other way. While `VCU_ADS_EPS` is stale the rate is `0.0`. `wheel_base`
+comes from `golfcart_vehicle_description/config/vehicle_info.param.yaml`, which
+the launch passes to the node.
+
 ## Known limitations
 
 Tracked gaps against the vendor manual. See `CHANGELOG.md` for what has already
@@ -222,10 +258,11 @@ been aligned.
   frames will be rejected and the vehicle will not move. **Blocker for
   real-vehicle bring-up; confirm with the vendor whether the field is enforced.**
 - **Segmented-brake dead-zone not remapped.** Deceleration requests below
-  `1.2 m/s²` produce no braking on ROOTS, so gentle planner stops coast. The
-  interface passes the value through unchanged; biasing low requests into the
-  active band (or documenting the coast as intentional) is an open tuning
-  decision.
+  `1.2 m/s²` produce no braking on ROOTS, so gentle planner stops coast.
+  Requests under `decel_deadband_mps2` are dropped so they no longer cut the
+  motor; those between it and `1.2 m/s²` are passed through unchanged. Lifting
+  them into the active band is an open tuning decision that needs the vehicle;
+  see [Longitudinal command mapping](#longitudinal-command-mapping).
 - **`can0` setup script** does not set the 87.5 % sample point explicitly
   (`scripts/setup-physical-can.sh`). Acceptable on most controllers that default
   to a compatible sample point, but worth pinning to match the vendor spec.
@@ -252,14 +289,14 @@ remaps to Autoware-standard names.
 | `/control/command/gear_cmd` | `autoware_vehicle_msgs/GearCommand` | Park / Drive / Neutral / Reverse. Subject to anti-chatter latch. |
 | `/control/command/turn_indicators_cmd` | `autoware_vehicle_msgs/TurnIndicatorsCommand` | Left / Right / Off. Hazard subscription overrides. |
 | `/control/command/hazard_lights_cmd` | `autoware_vehicle_msgs/HazardLightsCommand` | Hazard On / Off. |
-| `/control/command/emergency_cmd` | `tier4_vehicle_msgs/VehicleEmergencyStamped` | Autoware MRM operator e-stop. |
-| `/vehicle/emergency_stop` | `std_msgs/Bool` | Manual button / hand-rolled e-stop. |
+| `/control/command/emergency_cmd` | `tier4_vehicle_msgs/VehicleEmergencyStamped` | Autoware MRM e-stop (`vehicle_cmd_gate`). Sets and clears the MRM flag only. |
+| `/vehicle/emergency_stop` | `std_msgs/Bool` | Driver button / hand-rolled e-stop. Sets and clears the driver flag only. |
 
 ### Publishers
 
 | Topic (after remap) | Type | Notes |
 |---|---|---|
-| `/vehicle/status/velocity_status` | `autoware_vehicle_msgs/VelocityReport` | From `VCU_ADS_MTR.Vehicle_Speed`. |
+| `/vehicle/status/velocity_status` | `autoware_vehicle_msgs/VelocityReport` | From `VCU_ADS_MTR.Vehicle_Speed`; `heading_rate` derived from the steering, see [Heading rate](#heading-rate). |
 | `/vehicle/status/steering_status` | `autoware_vehicle_msgs/SteeringReport` | From `VCU_ADS_EPS.Tire_Angle`. |
 | `/vehicle/status/gear_status` | `autoware_vehicle_msgs/GearReport` | From `VCU_ADS_MTR.Gear_Position`. |
 | `/vehicle/status/control_mode` | `autoware_vehicle_msgs/ControlModeReport` | Aggregate of the four VCU subsystem states: all-auto → `AUTONOMOUS`, all-manual → `MANUAL`, otherwise `NOT_READY`. A latched fault overrides to `DISENGAGED`. |
@@ -293,6 +330,8 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `max_speed_mps` | f64 | 5.0 | Cap on speed setpoint magnitude. Effective cap is `min(max_speed_mps, 6.944)` — ROOTS tops out at 25 km/h. Direction is set by the gear; the setpoint is always non-negative. |
 | `max_accel_mps2` | f64 | 2.0 | Cap on forward accel setpoint. |
 | `max_decel_mps2` | f64 | 4.0 | Cap on brake decel setpoint. |
+| `decel_deadband_mps2` | f64 | 0.2 | Decelerations below this are sent as `0` so PID jitter does not cut the motor. Must be in `[0, 1.2)`; 0 disables. See [Longitudinal command mapping](#longitudinal-command-mapping). |
+| `wheel_base` | f64 | 2.061 | Axle distance (m) for the derived `heading_rate`. The launch passes it from `vehicle_info.param.yaml`. Must be > 0. |
 | `max_tire_angle_rad` | f64 | 0.349 | Cap on tire-angle setpoint magnitude (≈20°). |
 | `invert_steering` | bool | `true` | Flip the tire-angle sign at the CAN boundary. Autoware counts positive to the left (REP-103), ROOTS to the right. Applied to TX setpoints and to the decoded `SteeringReport` / actuation status. |
 | `steer_rate_stopped_rps` | f64 | 0.4 | Slew rate while \|v\| < 0.05 m/s **or** MTR stale. |
@@ -388,8 +427,12 @@ cd src/vehicle/golfcart_vehicle_launch/golfcart_vehicle_interface
 cargo test
 ```
 
-Covers DBC encode/decode round-trips and the `TxMode::evaluate` table
-(8 transitions including the cold-start regression).
+Covers DBC encode/decode round-trips, the `TxMode::evaluate` table (including
+the cold-start regression), the idle heartbeat bytes, the parking and
+non-negative-speed protections, the steering sign flip, the Control rate
+guard, the per-source e-stop combination (`state::estop_tests`), the
+accel/decel split and deadband (`node::longitudinal_tests`), and the heading
+rate (`node::heading_rate_tests`).
 
 ## Source layout
 

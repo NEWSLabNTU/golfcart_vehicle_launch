@@ -14,8 +14,15 @@
   -->
   <arg name="tx_enabled" default="$(env GOLFCART_TX_ENABLED false)" description="Master enable for CAN TX. Default false for safety; set true to actually drive the vehicle."/>
   <arg name="param_file" default="$(find-pkg-share golfcart_vehicle_launch)/config/vehicle_interface.param.yaml"/>
+  <!--
+    wheel_base (for the heading rate in VelocityReport) comes from the same
+    vehicle_info file the rest of Autoware reads, so the two cannot drift. The
+    node declares only wheel_base; the other keys in the file are ignored.
+  -->
+  <arg name="vehicle_info_param_file" default="$(find-pkg-share golfcart_vehicle_description)/config/vehicle_info.param.yaml"/>
 
   <node pkg="golfcart_vehicle_interface" exec="golfcart_vehicle_interface" name="vehicle_interface" output="screen">
+    <param from="$(var vehicle_info_param_file)"/>
     <param from="$(var param_file)"/>
     <param name="can_interface" value="$(var can_interface)"/>
     <param name="tx_enabled" value="$(var tx_enabled)"/>

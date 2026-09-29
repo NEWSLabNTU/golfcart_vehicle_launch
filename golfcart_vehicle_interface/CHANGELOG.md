@@ -17,6 +17,19 @@ Aligns the TX path with the **ROOTS Drive-by-Wire 使用說明** vendor manual
 and that deceleration takes priority over speed (the motor cuts torque whenever
 deceleration is commanded).
 
+### Added
+
+- **`VelocityReport.heading_rate` is derived, not hardcoded `0.0`.** The VCU
+  reports no yaw rate, so it is `v * tan(steering_tire_angle) / wheel_base`
+  from the latest fresh EPS report, in the same REP-103 sign as the published
+  `SteeringReport`; `0.0` while EPS is stale. New parameter `wheel_base`
+  (default 2.061), passed by the launch from
+  `golfcart_vehicle_description/config/vehicle_info.param.yaml`.
+- **`decel_deadband_mps2` (default 0.2 m/s²).** Commanded decelerations below it
+  are sent as `0`. Any deceleration cuts motor torque while ROOTS does not
+  brake below 1.2 m/s², so the PID's jitter around zero at cruise toggled the
+  motor. Validated to `[0, 1.2)`.
+
 ### Changed
 
 - **Brake commands now use deceleration, not pressure.** ROOTS ignores
@@ -71,8 +84,9 @@ Carried forward and still open:
 - `Veh_Chksum` algorithm not provided by the vendor — every TX frame sends `0`
   (`checksum_stub()`). Blocker for real-vehicle bring-up if the VCU validates it.
 - Segmented brake dead-zone: deceleration requests below `1.2 m/s²` do not
-  actuate the ROOTS brake at all, so gentle planner stops coast. Not yet
-  remapped — needs a tuning decision.
+  actuate the ROOTS brake at all, so gentle planner stops coast. Requests under
+  `decel_deadband_mps2` no longer cut the motor; those between it and 1.2 are
+  still not remapped, which needs a tuning decision on the vehicle.
 
 ## [0.1.0] - initial
 

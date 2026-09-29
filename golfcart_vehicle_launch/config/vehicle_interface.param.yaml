@@ -24,3 +24,10 @@
     # blind between updates. Steering, gear and brake still pass through, and
     # total silence is handled by control_timeout_ms. 0 disables the check.
     control_min_rate_hz: 10.0
+    # Commanded decelerations below this (m/s^2) are sent as none. Any
+    # Target_Deceleration > 0 makes the VCU cut motor torque, yet ROOTS does
+    # not brake below 1.2 m/s^2, so Autoware's PID dithering around zero at
+    # cruise would toggle the motor. Must be in [0, 1.2); 0 disables.
+    decel_deadband_mps2: 0.2
+    # wheel_base (for VelocityReport.heading_rate) is NOT set here: the launch
+    # passes it from golfcart_vehicle_description's vehicle_info.param.yaml.
