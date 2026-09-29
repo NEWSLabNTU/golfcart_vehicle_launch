@@ -82,8 +82,8 @@ flowchart TD
     Idle -->|"driver switches vehicle to auto<br/>(all four states Autonomous)"| EngagedWaiting
     EngagedWaiting -->|"first Control msg arrives"| Driving
     EngagedWaiting -->|"driver takes the vehicle back<br/>OR any state disagrees"| Idle
-    EngagedWaiting -->|"ECU fault / driver e-stop"| SafetyBrake
-    Driving -->|"Control stale > control_timeout_ms<br/>OR ECU hazard<br/>OR driver e-stop<br/>OR persistent CAN TX failure"| SafetyBrake
+    EngagedWaiting -->|"ECU fault / driver or MRM e-stop"| SafetyBrake
+    Driving -->|"Control stale > control_timeout_ms<br/>OR ECU hazard<br/>OR driver or MRM e-stop<br/>OR persistent CAN TX failure"| SafetyBrake
     Driving -->|"driver takes the vehicle back<br/>OR any state disagrees"| Idle
     SafetyBrake -->|"driver takes the vehicle back<br/>OR any state disagrees"| Idle
 ```
@@ -124,6 +124,28 @@ timestamp is cleared on that transition, so a handover never starts in
 Note the mode gate outranks the e-stop: a driver e-stop or latched fault while
 the vehicle is in manual leaves us silent rather than braking behind the
 driver's back — their own pedal is the authority there.
+
+### E-stop sources
+
+Two topics can request an e-stop, and each holds its own flag. The effective
+e-stop is their OR, so it releases only once **both** have released.
+
+| Topic (after remap) | Flag | Written by |
+|---|---|---|
+| `/vehicle/emergency_stop` (`std_msgs/Bool`) | driver | the driver's button, or a hand-rolled caller |
+| `/control/command/emergency_cmd` (`VehicleEmergencyStamped`) | MRM | Autoware's `vehicle_cmd_gate` |
+
+A `false` on one topic releases only that topic's flag. This matters because
+`vehicle_cmd_gate` publishes `emergency_cmd` with `emergency=false` on every
+control cycle: when both topics shared one flag, the gate's next routine
+message cleared a driver's press within one cycle. Each flag's transitions are
+logged separately, and the `vehicle_interface` diagnostic carries
+`driver_estop` and `mrm_estop`.
+
+Neither topic has a watchdog. A publisher that dies while holding `true` leaves
+the cart in `SafetyBrake` (stuck-on is safer than stuck-off); recovery is a
+`false` on that same topic from a working publisher, or restarting the
+interface.
 
 ## CAN message overview
 
@@ -311,9 +333,10 @@ publisher conventions. Mismatched QoS would silently drop all messages.
   buckets; falls back to stopped rate when MTR is stale.
 - Gear anti-chatter: `gear_change_margin_ms` dwell; deceleration brake
   (`shift_brake_decel_mps2`) asserted during pending shift at low speed.
-- Driver e-stop: `cmd.estop` latched on either Bool or
-  `VehicleEmergencyStamped` topic. Recovery requires a fresh `false`
-  publish (stuck-on > stuck-off as fail-safe).
+- E-stop: driver (`Bool`) and MRM (`VehicleEmergencyStamped`) flags held
+  independently; either one trips `SafetyBrake`, and each is released only by
+  a `false` on its own topic (stuck-on > stuck-off as fail-safe). See
+  [E-stop sources](#e-stop-sources).
 
 ## Building from source
 

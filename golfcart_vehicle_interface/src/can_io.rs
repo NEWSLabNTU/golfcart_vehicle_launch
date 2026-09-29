@@ -594,7 +594,7 @@ impl TxMode {
             .map(|t| t.elapsed() > control_timeout)
             .unwrap_or(true);
 
-        if cmd.fault_latched || cmd.estop {
+        if cmd.fault_latched || cmd.estop.active() {
             return Self::SafetyBrake;
         }
         if was_driving && stale {
@@ -789,7 +789,7 @@ fn build_frames(
         authority,
         ADS_STATUS_RUNNING,
         false,
-        authority && (cmd.estop || safety_brake),
+        authority && (cmd.estop.active() || safety_brake),
         blinker.to_raw(),
         authority && cmd.headlight,
         authority && matches!(cmd.blinker, BlinkerCtrl::Right),
@@ -813,7 +813,7 @@ fn build_frames(
 #[cfg(test)]
 mod tx_mode_tests {
     use super::TxMode;
-    use crate::state::{CommandState, VehicleMode};
+    use crate::state::{CommandState, EstopSource, VehicleMode};
     use std::time::{Duration, Instant};
 
     const TIMEOUT: Duration = Duration::from_millis(500);
@@ -850,7 +850,7 @@ mod tx_mode_tests {
         // In manual the driver owns the brake pedal; we stay off the wire
         // instead of commanding a safety brake behind their back.
         let mut c = cmd();
-        c.estop = true;
+        c.estop.set(EstopSource::Driver, true);
         c.fault_latched = true;
         assert_eq!(
             TxMode::evaluate(&c, VehicleMode::Manual, TIMEOUT),
@@ -890,7 +890,7 @@ mod tx_mode_tests {
     #[test]
     fn safety_brake_when_estop_in_auto() {
         let mut c = cmd();
-        c.estop = true;
+        c.estop.set(EstopSource::Mrm, true);
         assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::SafetyBrake);
     }
 

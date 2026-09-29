@@ -27,6 +27,61 @@ pub enum VehicleMode {
     Abnormal,
 }
 
+/// Who asked for an e-stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstopSource {
+    /// `~/input/emergency_stop` (`std_msgs::Bool`): the driver's button or a
+    /// hand-rolled caller.
+    Driver,
+    /// `~/input/emergency_cmd` (`tier4_vehicle_msgs::VehicleEmergencyStamped`):
+    /// Autoware's `vehicle_cmd_gate`.
+    Mrm,
+}
+
+/// Requested e-stops, kept per source. The effective e-stop is their OR.
+///
+/// The two sources must not share one flag. `vehicle_cmd_gate` publishes
+/// `emergency_cmd` with `emergency=false` on every control cycle, so with a
+/// shared flag a driver's press was cleared by the gate's next routine message,
+/// within one cycle. Each topic now writes, and can release, only its own flag.
+///
+/// There is no watchdog on either topic: a publisher that dies while holding
+/// `true` leaves the cart in `SafetyBrake`, which is the intended fail-safe
+/// (stuck-on is safer than stuck-off). Recovery is a `false` from a working
+/// publisher on that same topic, or restarting the interface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EstopState {
+    driver: bool,
+    mrm: bool,
+}
+
+impl EstopState {
+    /// Record `source`'s latest request. Returns `Some(engaged)` when that
+    /// source's own flag changed, so the caller logs transitions, not repeats.
+    pub fn set(&mut self, source: EstopSource, engaged: bool) -> Option<bool> {
+        let flag = match source {
+            EstopSource::Driver => &mut self.driver,
+            EstopSource::Mrm => &mut self.mrm,
+        };
+        let changed = *flag != engaged;
+        *flag = engaged;
+        changed.then_some(engaged)
+    }
+
+    pub fn driver(&self) -> bool {
+        self.driver
+    }
+
+    pub fn mrm(&self) -> bool {
+        self.mrm
+    }
+
+    /// True while any source holds the e-stop.
+    pub fn active(&self) -> bool {
+        self.driver || self.mrm
+    }
+}
+
 /// Latest commands written by ROS subscribers/services. The TX thread reads
 /// this on every period and packs the four ADS_VCU_* frames.
 #[derive(Debug, Clone, Copy)]
@@ -45,15 +100,9 @@ pub struct CommandState {
 
     pub blinker: BlinkerCtrl,
     pub headlight: bool,
-    /// Driver-side e-stop. Set by either:
-    ///   * `~/input/emergency_stop` (`std_msgs::Bool`)
-    ///   * `~/input/emergency_cmd`  (`tier4_vehicle_msgs::VehicleEmergencyStamped`)
-    /// Trips `SafetyBrake` while held. Note: there is no watchdog on the
-    /// e-stop topic — if the publisher dies while `estop=true`, the cart
-    /// stays in `SafetyBrake` indefinitely, which is the desired fail-safe
-    /// (stuck-on is safer than stuck-off). Recovery requires republishing
-    /// `false` from a working publisher, or restarting the interface.
-    pub estop: bool,
+    /// Requested e-stops, one flag per source (see `EstopState`). Trips
+    /// `SafetyBrake` while any source holds it.
+    pub estop: EstopState,
     /// Sticky latch raised when the ECU reports any hazard
     /// (`Vcu_Ads_Estop` or any of the four `Vcu_Ads_Error_Code_*` bits).
     /// While set, the TX loop commands a safety brake (as long as the vehicle
@@ -101,7 +150,7 @@ impl Default for CommandState {
             target_tire_angle_rad: 0.0,
             blinker: BlinkerCtrl::Off,
             headlight: false,
-            estop: false,
+            estop: EstopState::default(),
             fault_latched: false,
             last_control_at: None,
             control_freq: FreqWindow::default(),
@@ -345,5 +394,56 @@ mod vehicle_mode_tests {
         s.brk_at = Some(Instant::now() - Duration::from_secs(5));
         assert_eq!(s.vehicle_mode(TIMEOUT), VehicleMode::Abnormal);
         assert_eq!(s.subsystem_states(TIMEOUT)[1], None);
+    }
+}
+
+#[cfg(test)]
+mod estop_tests {
+    //! `vehicle_cmd_gate` publishes `emergency_cmd` with `emergency=false` on
+    //! every control cycle, so a release on one topic must never clear an
+    //! e-stop the other topic is holding.
+
+    use super::{EstopSource, EstopState};
+
+    #[test]
+    fn driver_estop_survives_mrm_false() {
+        let mut e = EstopState::default();
+        e.set(EstopSource::Driver, true);
+        e.set(EstopSource::Mrm, false); // the gate's routine per-cycle message
+        assert!(e.active(), "driver e-stop must hold through emergency_cmd=false");
+        assert!(e.driver());
+        assert!(!e.mrm());
+    }
+
+    #[test]
+    fn mrm_estop_survives_driver_false() {
+        let mut e = EstopState::default();
+        e.set(EstopSource::Mrm, true);
+        e.set(EstopSource::Driver, false);
+        assert!(e.active(), "MRM e-stop must hold through emergency_stop=false");
+        assert!(e.mrm());
+        assert!(!e.driver());
+    }
+
+    #[test]
+    fn released_only_when_both_release() {
+        let mut e = EstopState::default();
+        e.set(EstopSource::Driver, true);
+        e.set(EstopSource::Mrm, true);
+        e.set(EstopSource::Driver, false);
+        assert!(e.active());
+        e.set(EstopSource::Mrm, false);
+        assert!(!e.active());
+    }
+
+    #[test]
+    fn set_reports_only_that_sources_transitions() {
+        let mut e = EstopState::default();
+        assert_eq!(e.set(EstopSource::Driver, true), Some(true));
+        assert_eq!(e.set(EstopSource::Driver, true), None, "repeat is not a transition");
+        // The MRM flag was never set, so a routine false from the gate is
+        // not a release and must not be logged as one.
+        assert_eq!(e.set(EstopSource::Mrm, false), None);
+        assert_eq!(e.set(EstopSource::Driver, false), Some(false));
     }
 }

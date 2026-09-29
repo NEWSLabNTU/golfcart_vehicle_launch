@@ -41,6 +41,13 @@ deceleration is commanded).
 
 ### Fixed
 
+- **A driver e-stop was cleared within one control cycle.** `emergency_stop`
+  (`Bool`) and `emergency_cmd` (`VehicleEmergencyStamped`) wrote one shared
+  flag, and `vehicle_cmd_gate` publishes `emergency_cmd` with
+  `emergency=false` on every cycle, so its next routine message released a
+  driver's press. The two sources now hold independent flags (`EstopState`);
+  the effective e-stop is their OR and each topic releases only its own flag.
+  Diagnostics report `driver_estop` and `mrm_estop` separately.
 - **Build against the current vendor DBC revision** (`Roots_can_test` drop,
   2026-07). The vendor renamed all messages with bus-direction prefixes
   (`RX_ADS_VCU_*` / `TX_VCU_ADS_*`, from the VCU's point of view), which made

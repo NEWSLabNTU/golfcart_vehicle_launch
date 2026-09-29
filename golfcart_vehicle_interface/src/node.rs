@@ -23,7 +23,7 @@ use crate::dbc::{
     TIRE_ANGLE_DEG_MAX, TIRE_ANGLE_DEG_MIN,
 };
 use crate::params::Params;
-use crate::state::{SharedState, VehicleMode};
+use crate::state::{EstopSource, EstopState, SharedState, VehicleMode};
 
 const NODE_NAME: &str = "golfcart_vehicle_interface";
 
@@ -157,27 +157,29 @@ impl VehicleInterfaceNode {
             )?
         };
 
-        // Driver/operator e-stop (separate from the ECU-side estop signal).
-        // Setting `cmd.estop = true` trips SafetyBrake the same way an ECU
-        // hazard does. Releasing (false) clears the driver e-stop, but a
-        // latched ECU fault stays latched until a MANUAL/NO_COMMAND request.
-        // Two topics serve the same flag:
-        //   * `~/input/emergency_stop` (`std_msgs::Bool`) — simple manual
-        //     button / hand-rolled callers.
-        //   * `~/input/emergency_cmd` (`tier4_vehicle_msgs::VehicleEmergencyStamped`)
-        //     — Autoware MRM operator standard topic.
+        // E-stop requests, one flag per source (see `EstopState`). Either
+        // source engaging trips SafetyBrake the same way an ECU hazard does;
+        // a release clears only that source's own flag, so the effective
+        // e-stop drops only once both have released. A latched ECU fault
+        // stays latched regardless, until a MANUAL/NO_COMMAND request.
+        //   * `~/input/emergency_stop` (`std_msgs::Bool`): the driver's
+        //     button or a hand-rolled caller.
+        //   * `~/input/emergency_cmd` (`VehicleEmergencyStamped`): Autoware's
+        //     vehicle_cmd_gate. It publishes `emergency=false` on every
+        //     control cycle, which is why the two cannot share one flag: a
+        //     shared flag let the gate's next routine message clear a driver
+        //     press within one cycle.
         let sub_estop = {
             let state = Arc::clone(&state);
             node.create_subscription(
                 sub_opts("~/input/emergency_stop"),
                 move |msg: std_msgs::msg::Bool| {
                     let mut cmd = state.command.lock();
-                    if msg.data && !cmd.estop {
-                        log_info!(NODE_NAME, "driver e-stop ENGAGED");
-                    } else if !msg.data && cmd.estop {
-                        log_info!(NODE_NAME, "driver e-stop released");
-                    }
-                    cmd.estop = msg.data;
+                    log_estop_transition(
+                        EstopSource::Driver,
+                        cmd.estop.set(EstopSource::Driver, msg.data),
+                        &cmd.estop,
+                    );
                 },
             )?
         };
@@ -188,12 +190,11 @@ impl VehicleInterfaceNode {
                 sub_opts("~/input/emergency_cmd"),
                 move |msg: VehicleEmergencyStamped| {
                     let mut cmd = state.command.lock();
-                    if msg.emergency && !cmd.estop {
-                        log_info!(NODE_NAME, "MRM emergency_cmd ENGAGED");
-                    } else if !msg.emergency && cmd.estop {
-                        log_info!(NODE_NAME, "MRM emergency_cmd released");
-                    }
-                    cmd.estop = msg.emergency;
+                    log_estop_transition(
+                        EstopSource::Mrm,
+                        cmd.estop.set(EstopSource::Mrm, msg.emergency),
+                        &cmd.estop,
+                    );
                 },
             )?
         };
@@ -495,6 +496,26 @@ fn publish_status(
     }
 }
 
+/// Log one source's e-stop transition. `changed` is what `EstopState::set`
+/// returned; repeats are silent, since both topics are republished constantly.
+fn log_estop_transition(source: EstopSource, changed: Option<bool>, estop: &EstopState) {
+    let name = match source {
+        EstopSource::Driver => "driver e-stop",
+        EstopSource::Mrm => "MRM emergency_cmd",
+    };
+    match changed {
+        Some(true) => log_info!(NODE_NAME, "{name} ENGAGED"),
+        Some(false) if estop.active() => log_info!(
+            NODE_NAME,
+            "{name} released; e-stop still held (driver={} mrm={})",
+            estop.driver(),
+            estop.mrm()
+        ),
+        Some(false) => log_info!(NODE_NAME, "{name} released; no e-stop active"),
+        None => {}
+    }
+}
+
 fn now_stamp(clock: &Clock) -> Time {
     // Clock::now() returns rclrs::Time; convert to (sec, nanosec) and rebuild
     // as the project-vendored builtin_interfaces::msg::Time. Negative epoch
@@ -665,7 +686,8 @@ fn publish_diagnostics(
             });
         }
 
-        let estop_active = veh.vcu_ads_estop_raw() || cmd.estop;
+        let ecu_estop = veh.vcu_ads_estop_raw();
+        let estop_active = ecu_estop || cmd.estop.active();
         entries.push(DiagnosticStatus {
             level: if estop_active {
                 DiagnosticStatus::ERROR
@@ -673,11 +695,21 @@ fn publish_diagnostics(
                 DiagnosticStatus::OK
             },
             name: "vehicle_interface/estop".to_string(),
-            message: match (veh.vcu_ads_estop_raw(), cmd.estop) {
-                (true, true) => "ECU + driver e-stop active".to_string(),
-                (true, false) => "ECU e-stop active".to_string(),
-                (false, true) => "driver e-stop active".to_string(),
-                _ => "ok".to_string(),
+            message: {
+                let active: Vec<&str> = [
+                    (ecu_estop, "ECU"),
+                    (cmd.estop.driver(), "driver"),
+                    (cmd.estop.mrm(), "MRM"),
+                ]
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, name)| *name)
+                .collect();
+                if active.is_empty() {
+                    "ok".to_string()
+                } else {
+                    format!("{} e-stop active", active.join(" + "))
+                }
             },
             hardware_id: "cax_ads_can".to_string(),
             values: vec![],
@@ -723,7 +755,7 @@ fn publish_diagnostics(
     // VCU report counts as a fault — Autoware should not assume operational
     // ECU state from a frozen snapshot.
     let overall_faulted = cmd.fault_latched
-        || cmd.estop
+        || cmd.estop.active()
         || veh_stale
         || veh_fresh
             .map(|v| {
@@ -772,7 +804,8 @@ fn publish_diagnostics(
                 },
             ),
             kv("fault_latched", cmd.fault_latched.to_string()),
-            kv("driver_estop", cmd.estop.to_string()),
+            kv("driver_estop", cmd.estop.driver().to_string()),
+            kv("mrm_estop", cmd.estop.mrm().to_string()),
             kv(
                 "speed_mps",
                 status
