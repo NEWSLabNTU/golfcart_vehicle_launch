@@ -9,4 +9,6 @@
     left_overhang: 0.001 # between left wheel center and vehicle left
     right_overhang: 0.001 # between right wheel center and vehicle right
     vehicle_height: 2.005
-    max_steer_angle: 0.349 # [rad]
+    max_steer_angle: 0.52 # [rad] ~29.8 deg, inside the VCU's +-30 deg (0.5236). Was 0.349, inherited
+                          # from the PWM cart; the 2026-09-24 hand-driven basement lap turned at 3.3 to
+                          # 4.1 m radius, which needs ~30 deg (Phase 8, V3). Not yet measured on the cart.

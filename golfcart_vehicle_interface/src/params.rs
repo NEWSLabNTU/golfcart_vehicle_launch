@@ -192,7 +192,11 @@ impl Params {
 
         let max_tire_angle_rad = node
             .declare_parameter("max_tire_angle_rad")
-            .default(0.349) // ≈ 20°, matches mechanical EPS limit
+            // ~29.8 deg, just inside the VCU's ±30° (Ads_Vcu_Target_Tire_Angle).
+            // Was 0.349 (20°), inherited from the PWM cart; the basement aisle
+            // corners need ~30° (Phase 8, V3). Keep equal to max_steer_angle in
+            // golfcart_vehicle_description's vehicle_info.param.yaml.
+            .default(0.52)
             .mandatory()?
             .get();
 

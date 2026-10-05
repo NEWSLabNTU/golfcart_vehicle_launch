@@ -204,8 +204,8 @@ behaviour, and they constrain what command values are actually honoured.
   e-stop to stop while moving — the gear-change gate only forwards `Parking` at
   low speed.
 - **Tire angle range is `[-30, 30]°`** (`Ads_Vcu_Target_Tire_Angle`,
-  `ADS_VCU_EPS`, `0x065`). The default `max_tire_angle_rad` (≈ 20°) stays well
-  inside this.
+  `ADS_VCU_EPS`, `0x065`). The default `max_tire_angle_rad` (0.52 rad, ≈ 29.8°) stays just
+  inside this, and equals `max_steer_angle` in `vehicle_info.param.yaml`.
 - **30 Hz rolling-counter gate.** The VCU monitors `Ads_Vcu_Rolling_Counter` in
   `ADS_VCU_VEHICLE` (`0x43F`) and refuses autonomous mode if the rate falls far
   below ~30 Hz. `tx_rate_hz` defaults to 100 Hz. (The manual's reference to
@@ -332,7 +332,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `max_decel_mps2` | f64 | 4.0 | Cap on brake decel setpoint. |
 | `decel_deadband_mps2` | f64 | 0.2 | Decelerations below this are sent as `0` so PID jitter does not cut the motor. Must be in `[0, 1.2)`; 0 disables. See [Longitudinal command mapping](#longitudinal-command-mapping). |
 | `wheel_base` | f64 | 2.061 | Axle distance (m) for the derived `heading_rate`. The launch passes it from `vehicle_info.param.yaml`. Must be > 0. |
-| `max_tire_angle_rad` | f64 | 0.349 | Cap on tire-angle setpoint magnitude (≈20°). |
+| `max_tire_angle_rad` | f64 | 0.52 | Cap on tire-angle setpoint magnitude (≈29.8°); keep equal to `max_steer_angle`. Was 0.349 until 2026-10-05. |
 | `invert_steering` | bool | `true` | Flip the tire-angle sign at the CAN boundary. Autoware counts positive to the left (REP-103), ROOTS to the right. Applied to TX setpoints and to the decoded `SteeringReport` / actuation status. |
 | `steer_rate_stopped_rps` | f64 | 0.4 | Slew rate while \|v\| < 0.05 m/s **or** MTR stale. |
 | `steer_rate_low_vel_rps` | f64 | 0.4 | Slew rate while v < `steer_low_vel_thresh_mps`. |
