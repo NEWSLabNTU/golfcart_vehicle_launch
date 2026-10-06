@@ -409,14 +409,14 @@ to this section.
 ## Running standalone
 
 ```
-just vehicle interface             # CAN RX only on can0, cart cannot move
+just vehicle interface             # real bus, can0
 just vehicle interface can=vcan0   # bench, against mock_vcu
-just vehicle interface tx=on       # TX live - this can drive the cart
 just vehicle manual-control                # keyboard teleop, in a second terminal
 ```
 
-`tx=off` (the default) runs the full node but skips the socket write, so
-`/vehicle/status/*` and `/diagnostics` populate without commanding anything.
+The node always transmits; the VCU reports only while it hears our rolling
+counter, so there is no listen-only mode. Use `can=vcan0` to stay off the cart,
+and the cart's power switch on the real bus.
 `just vehicle manual-control` runs `autoware_manual_control` directly: it reads a raw
 tty, so it needs a terminal of its own and cannot be a node in a launch file.
 

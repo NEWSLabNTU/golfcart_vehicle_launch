@@ -5,9 +5,8 @@ Streams `autoware_control_msgs/msg/Control` at a configurable rate so the
 vehicle interface stays out of its `control_timeout_ms` window. Buttons drive
 gear, blinker, hazard, ControlMode service, and the operator e-stop topic.
 
-Designed for bench/garage runs alongside the vehicle interface — set
-`tx_enabled:=false` on the interface for a dry run, `tx_enabled:=true` once
-the rig is wired up.
+Designed for bench/garage runs alongside the vehicle interface. For a dry
+run, point the interface at vcan0 rather than the real bus.
 """
 
 import threading

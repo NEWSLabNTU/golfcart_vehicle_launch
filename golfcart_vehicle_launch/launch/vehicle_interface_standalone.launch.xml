@@ -3,9 +3,9 @@
   Standalone bring-up of golfcart_vehicle_interface, without Autoware.
 
   Runs the vehicle interface by itself against a real bus (`can0`) or a vcan
-  loopback (`vcan0`). CAN TX is disabled by default, so RX still flows and
-  /vehicle/status/* and /diagnostics stay populated while the cart cannot be
-  commanded into motion. Set `tx_enabled:=true` only when you intend to drive.
+  loopback (`vcan0`). It always transmits: the VCU reports only while it hears
+  our rolling counter, so there is no listen-only mode. Use vcan0 to keep the
+  cart out of it, and the cart's power switch on the real bus.
 
   Optional extras:
     vehicle_description robot_state_publisher (URDF + sensor kit calibration)
@@ -18,7 +18,6 @@
 -->
 <launch>
   <arg name="can_interface" default="can0" description="SocketCAN interface (can0 for the real bus, vcan0 for the bench)"/>
-  <arg name="tx_enabled" default="false" description="CAN TX master enable. Default false: the cart cannot be commanded into motion."/>
   <arg name="vehicle_description" default="false" description="Publish the vehicle URDF via robot_state_publisher"/>
   <arg name="velocity_converter" default="false" description="Run autoware_vehicle_velocity_converter"/>
 
@@ -29,7 +28,6 @@
        shared with the full Autoware stack. Single definition, no drift. -->
   <include file="$(find-pkg-share golfcart_vehicle_launch)/launch/vehicle_interface.launch.xml">
     <arg name="can_interface" value="$(var can_interface)"/>
-    <arg name="tx_enabled" value="$(var tx_enabled)"/>
   </include>
 
   <!-- Robot description (URDF + sensor_kit calibration) for the TF tree. -->

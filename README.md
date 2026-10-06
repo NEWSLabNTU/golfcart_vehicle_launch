@@ -75,9 +75,8 @@ Inside the Autoware stack the interface comes up with the rest of the system.
 On its own, use the recipe:
 
 ```bash
-just vehicle interface                # CAN RX only, nothing can move
+just vehicle interface                # real bus, can0
 just vehicle interface can=vcan0      # bench, against mock_vcu
-just vehicle interface tx=on          # TX live: this drives the cart
 just vehicle interface converter=on   # + robot_state_publisher + velocity converter
 ```
 
@@ -85,12 +84,14 @@ which wraps:
 
 ```bash
 ros2 launch golfcart_vehicle_launch vehicle_interface_standalone.launch.xml \
-    can_interface:=can0 tx_enabled:=false
+    can_interface:=can0
 ```
 
-`tx_enabled` defaults to false everywhere: the node runs its full logic and
-publishes `/vehicle/status/*`, but skips the socket write, so the cart cannot be
-commanded into motion until you ask for it.
+The node always transmits. There is no listen-only mode, because there is no
+such thing on this VCU: it reports velocity and steering only while it hears
+our frames' rolling counter, so a node that stayed silent also left
+`/vehicle/status/*` empty. Keep the cart out of a test by running against
+`vcan0`, and on the real bus by the cart's power switch.
 
 Keyboard control is a separate recipe, run in a second terminal:
 
