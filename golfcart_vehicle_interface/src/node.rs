@@ -83,8 +83,7 @@ impl VehicleInterfaceNode {
                 // comes from the gear, not the sign. Take |velocity|, then clamp
                 // to the user-policy cap, the ROOTS 25 km/h ceiling, and finally
                 // the DBC signal max so the encode call never errors.
-                let speed_cap = max_speed.min(ROOTS_MAX_SPEED_MPS).min(SPEED_MPS_MAX);
-                let speed = clamp_f32((msg.longitudinal.velocity as f32).abs(), 0.0, speed_cap);
+                let speed = commanded_speed(msg.longitudinal.velocity as f32, max_speed);
 
                 let Longitudinal { accel, decel } = split_longitudinal(
                     msg.longitudinal.acceleration as f32,
@@ -435,6 +434,18 @@ pub fn steering_sign(params: &Params) -> f32 {
 pub struct Longitudinal {
     pub accel: f32,
     pub decel: f32,
+}
+
+/// Speed setpoint for a Control `longitudinal.velocity`: its magnitude (the
+/// gear sets direction), capped at `max_speed_mps`, the ROOTS 25 km/h ceiling
+/// and the DBC signal maximum, whichever is lowest. NaN folds to 0.
+///
+/// `max_speed_mps` is the only hard ceiling on the cart's commanded speed:
+/// Autoware's `planning_speed_limit` is a default the operator can raise at
+/// runtime, this is not.
+pub fn commanded_speed(velocity_mps: f32, max_speed_mps: f32) -> f32 {
+    let cap = max_speed_mps.min(ROOTS_MAX_SPEED_MPS).min(SPEED_MPS_MAX);
+    clamp_f32(velocity_mps.abs(), 0.0, cap)
 }
 
 /// Split Autoware's signed longitudinal acceleration into the VCU's separate
@@ -1130,5 +1141,36 @@ mod longitudinal_tests {
     #[test]
     fn decel_is_still_capped() {
         assert_eq!(split(-10.0).decel, MAX_DECEL);
+    }
+}
+
+#[cfg(test)]
+mod commanded_speed_tests {
+    use super::{commanded_speed, ROOTS_MAX_SPEED_MPS};
+
+    #[test]
+    fn below_the_cap_passes_through() {
+        assert_eq!(commanded_speed(1.0, 1.5), 1.0);
+    }
+
+    #[test]
+    fn above_the_cap_is_clamped_to_it() {
+        // Phase 8 S4: Autoware asks for its 4.17 m/s default, the cart gets 1.5.
+        assert_eq!(commanded_speed(4.17, 1.5), 1.5);
+    }
+
+    #[test]
+    fn reverse_is_capped_by_magnitude() {
+        assert_eq!(commanded_speed(-3.0, 1.5), 1.5);
+    }
+
+    #[test]
+    fn roots_ceiling_wins_over_a_generous_cap() {
+        assert_eq!(commanded_speed(20.0, 50.0), ROOTS_MAX_SPEED_MPS);
+    }
+
+    #[test]
+    fn nan_is_zero() {
+        assert_eq!(commanded_speed(f32::NAN, 1.5), 0.0);
     }
 }

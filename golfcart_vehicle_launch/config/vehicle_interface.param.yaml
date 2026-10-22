@@ -19,6 +19,14 @@
     # blind between updates. Steering, gear and brake still pass through, and
     # total silence is handled by control_timeout_ms. 0 disables the check.
     control_min_rate_hz: 10.0
+    # Hard ceiling on the commanded speed (m/s), whatever Autoware asks for;
+    # the code default is 5.0. 1.5 is the Phase 8 S4 first-run cap: the first
+    # supervised autonomous drives stay at a walking pace until steering sign,
+    # braking and localization are proven on the cart. Raise it deliberately.
+    # Autoware's planning_speed_limit is only the planner's startup default and
+    # can be changed at runtime; this is the ceiling. Effective cap is
+    # min(max_speed_mps, 6.944), the ROOTS 25 km/h limit.
+    max_speed_mps: 1.5
     # Commanded decelerations below this (m/s^2) are sent as none. Any
     # Target_Deceleration > 0 makes the VCU cut motor torque, yet ROOTS does
     # not brake below 1.2 m/s^2, so Autoware's PID dithering around zero at

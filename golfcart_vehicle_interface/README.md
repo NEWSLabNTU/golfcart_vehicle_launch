@@ -327,7 +327,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `control_timeout_ms` | i64 | 500 | Max age of a Control msg before TX trips into `SafetyBrake`. |
 | `control_min_rate_hz` | f32 | 10.0 | Minimum Control publish rate to command a speed. Below it the speed setpoint is held at 0, with a throttled warning and a `vehicle_interface/control_rate` WARN diagnostic. Steering, gear and brake still pass. 0 disables. |
 | `report_timeout_ms` | i64 | 1000 | Max age of a VCU_ADS_VEHICLE frame before status counts as stale. |
-| `max_speed_mps` | f64 | 5.0 | Cap on speed setpoint magnitude. Effective cap is `min(max_speed_mps, 6.944)` — ROOTS tops out at 25 km/h. Direction is set by the gear; the setpoint is always non-negative. |
+| `max_speed_mps` | f64 | 5.0 (param file: 1.5) | Hard cap on speed setpoint magnitude; the shipped param file sets the Phase 8 S4 first-run cap of 1.5. Autoware's `planning_speed_limit` is only a default, this is the ceiling. Effective cap is `min(max_speed_mps, 6.944)` — ROOTS tops out at 25 km/h. Direction is set by the gear; the setpoint is always non-negative. |
 | `max_accel_mps2` | f64 | 2.0 | Cap on forward accel setpoint. |
 | `max_decel_mps2` | f64 | 4.0 | Cap on brake decel setpoint. |
 | `decel_deadband_mps2` | f64 | 0.2 | Decelerations below this are sent as `0` so PID jitter does not cut the motor. Must be in `[0, 1.2)`; 0 disables. See [Longitudinal command mapping](#longitudinal-command-mapping). |
