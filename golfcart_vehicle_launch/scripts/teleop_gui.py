@@ -7,6 +7,16 @@ gear, blinker, hazard, ControlMode service, and the operator e-stop topic.
 
 Designed for bench/garage runs alongside the vehicle interface. For a dry
 run, point the interface at vcan0 rather than the real bus.
+
+E-stop-only mode, for an autonomous run beside Autoware::
+
+    ros2 run golfcart_vehicle_launch teleop_gui.py --ros-args -p estop_only:=true
+
+In the default mode the GUI streams its own Control (speed 0 unless moved) for
+as long as it runs, and those commands interleave with vehicle_cmd_gate's on
+/control/command/control_cmd. With `estop_only` it creates no command
+publishers, no service client and no timer: the window holds only the
+/vehicle/emergency_stop button.
 """
 
 import threading
@@ -36,12 +46,29 @@ STEER_RANGE_RAD = (-0.349, 0.349)
 class TeleopNode(Node):
     def __init__(self) -> None:
         super().__init__("golfcart_teleop_gui")
+        self.estop_only = bool(
+            self.declare_parameter("estop_only", False).value
+        )
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
+        self.pub_estop = self.create_publisher(Bool, "/vehicle/emergency_stop", qos)
+
+        self.target_speed = 0.0
+        self.target_accel = 0.5
+        self.target_steer = 0.0
+
+        if self.estop_only:
+            # Autoware owns the command topics; publishing on them here, even
+            # zeros, would interleave with vehicle_cmd_gate.
+            self.get_logger().info(
+                "estop_only: publishing /vehicle/emergency_stop only"
+            )
+            return
+
         self.pub_ctrl = self.create_publisher(
             Control, "/control/command/control_cmd", qos
         )
@@ -54,14 +81,9 @@ class TeleopNode(Node):
         self.pub_hazard = self.create_publisher(
             HazardLightsCommand, "/control/command/hazard_lights_cmd", qos
         )
-        self.pub_estop = self.create_publisher(Bool, "/vehicle/emergency_stop", qos)
         self.cli_mode = self.create_client(
             ControlModeCommand, "/control/control_mode_request"
         )
-
-        self.target_speed = 0.0
-        self.target_accel = 0.5
-        self.target_steer = 0.0
 
         self.create_timer(1.0 / CMD_RATE_HZ, self._tick)
 
@@ -112,9 +134,14 @@ class TeleopGUI:
     def __init__(self, node: TeleopNode) -> None:
         self.node = node
         self.root = tk.Tk()
-        self.root.title("Golf Cart Teleop")
-        self.root.geometry("520x520")
-        self._build()
+        if node.estop_only:
+            self.root.title("Golf Cart E-Stop")
+            self.root.geometry("360x120")
+            self._build_estop({"padx": 8, "pady": 4})
+        else:
+            self.root.title("Golf Cart Teleop")
+            self.root.geometry("520x520")
+            self._build()
 
     def _build(self) -> None:
         pad = {"padx": 8, "pady": 4}
@@ -213,6 +240,12 @@ class TeleopGUI:
         )
         self.hazard_btn.pack(side="left", expand=True, fill="x", padx=4, pady=4)
 
+        self._build_estop(pad)
+
+        zero_btn = ttk.Button(self.root, text="Zero speed + steer", command=self._zero)
+        zero_btn.pack(fill="x", **pad)
+
+    def _build_estop(self, pad: dict) -> None:
         estop_frame = ttk.LabelFrame(self.root, text="Operator E-Stop")
         estop_frame.pack(fill="x", **pad)
         self.estop_on = False
@@ -225,9 +258,6 @@ class TeleopGUI:
             command=self._toggle_estop,
         )
         self.estop_btn.pack(fill="x", padx=8, pady=8)
-
-        zero_btn = ttk.Button(self.root, text="Zero speed + steer", command=self._zero)
-        zero_btn.pack(fill="x", **pad)
 
     def _on_speed(self, _v: str) -> None:
         v = self.speed_var.get()

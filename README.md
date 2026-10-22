@@ -66,6 +66,9 @@ Located in `golfcart_vehicle_launch/`, this package contains:
   converter.
 - `scripts/teleop_gui.py` — Tk teleop, runnable with
   `ros2 run golfcart_vehicle_launch teleop_gui.py` when a display is available.
+  Beside Autoware, run it as a software e-stop only, with
+  `--ros-args -p estop_only:=true`: the full GUI streams its own Control for as
+  long as it runs, which interleaves with vehicle_cmd_gate's.
 
 ## Usage
 
