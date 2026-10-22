@@ -264,13 +264,15 @@ impl VehicleInterfaceNode {
                     }
                     let mut cmd = state.command.lock();
 
+                    let vehicle_mode = state.status.lock().vehicle_mode(report_timeout_srv);
                     if want_engage {
                         // Nothing to set: the driver switches the vehicle over.
                         // Report whether it is already there and unfaulted.
-                        let vehicle_mode =
-                            state.status.lock().vehicle_mode(report_timeout_srv);
-                        let engaged = vehicle_mode == VehicleMode::Autonomous
-                            && !cmd.fault_latched;
+                        let engaged = mode_request_acknowledged(
+                            true,
+                            vehicle_mode,
+                            cmd.fault_latched,
+                        );
                         if !engaged {
                             log_info!(
                                 NODE_NAME,
@@ -286,17 +288,29 @@ impl VehicleInterfaceNode {
 
                     // MANUAL / NO_COMMAND: clear the latch so the vehicle can
                     // be driven autonomously again once the driver hands it
-                    // back, and drop any held setpoints.
+                    // back, and drop any held setpoints. Neither switches the
+                    // vehicle: it stays in AUTO until the driver presses the
+                    // dashboard button, and the reply says which it is.
                     cmd.fault_latched = false;
                     cmd.target_speed_mps = 0.0;
                     cmd.target_acceleration_mps2 = 0.0;
                     cmd.target_tire_angle_rad = 0.0;
-                    log_info!(
-                        NODE_NAME,
-                        "ControlMode request: mode={} -> fault latch cleared, setpoints zeroed",
-                        req.mode
-                    );
-                    ControlModeCommand_Response { success: true }
+                    let released = mode_request_acknowledged(false, vehicle_mode, false);
+                    if released {
+                        log_info!(
+                            NODE_NAME,
+                            "ControlMode request: mode={} -> fault latch cleared, setpoints zeroed",
+                            req.mode
+                        );
+                    } else {
+                        log_info!(
+                            NODE_NAME,
+                            "ControlMode MANUAL not acknowledged: fault latch cleared and \
+                             setpoints zeroed, but the vehicle still reports Autonomous — \
+                             the driver switches it back on the dashboard, not over this service"
+                        );
+                    }
+                    ControlModeCommand_Response { success: released }
                 },
             )?
         };
@@ -383,6 +397,26 @@ struct Publishers {
     turn: Publisher<TurnIndicatorsReport>,
     hazard: Publisher<HazardLightsReport>,
     actuation: Publisher<ActuationStatusStamped>,
+}
+
+/// Whether a ControlModeCommand is answered `success`. The reply reports the
+/// vehicle's mode, never the request: the driver switches between AUTO and
+/// manual on the dashboard and this service cannot move the VCU either way.
+/// AUTONOMOUS succeeds once all four subsystems report Autonomous with no fault
+/// latched, so Autoware's engage waits for the handover. MANUAL succeeds once
+/// the vehicle is out of Autonomous; while it is still in AUTO the answer is
+/// false, or Autoware (and the keyboard controller's `m`) would believe a
+/// handback that never happened.
+pub fn mode_request_acknowledged(
+    want_autonomous: bool,
+    vehicle_mode: VehicleMode,
+    fault_latched: bool,
+) -> bool {
+    if want_autonomous {
+        vehicle_mode == VehicleMode::Autonomous && !fault_latched
+    } else {
+        vehicle_mode != VehicleMode::Autonomous
+    }
 }
 
 /// +1.0 or -1.0, from the `invert_steering` parameter. Autoware counts a
@@ -950,6 +984,37 @@ fn clamp_f32(v: f32, min: f32, max: f32) -> f32 {
         }
     } else {
         v.max(min).min(max)
+    }
+}
+
+#[cfg(test)]
+mod mode_request_tests {
+    use super::mode_request_acknowledged;
+    use crate::state::VehicleMode;
+
+    #[test]
+    fn autonomous_waits_for_the_driver() {
+        assert!(!mode_request_acknowledged(true, VehicleMode::Manual, false));
+        assert!(!mode_request_acknowledged(true, VehicleMode::Abnormal, false));
+        assert!(mode_request_acknowledged(true, VehicleMode::Autonomous, false));
+    }
+
+    #[test]
+    fn autonomous_refused_with_a_fault_latched() {
+        assert!(!mode_request_acknowledged(true, VehicleMode::Autonomous, true));
+    }
+
+    #[test]
+    fn manual_refused_while_the_vehicle_is_still_in_auto() {
+        // 2026-10-22 on the cart: `m` from the keyboard controller in AUTO was
+        // answered success while the VCU stayed Autonomous.
+        assert!(!mode_request_acknowledged(false, VehicleMode::Autonomous, false));
+    }
+
+    #[test]
+    fn manual_acknowledged_once_the_driver_has_switched_back() {
+        assert!(mode_request_acknowledged(false, VehicleMode::Manual, false));
+        assert!(mode_request_acknowledged(false, VehicleMode::Abnormal, false));
     }
 }
 
