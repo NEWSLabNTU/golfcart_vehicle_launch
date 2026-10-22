@@ -338,17 +338,19 @@ fn tx_loop(
             rate_ok_since = None;
             let due = last_rate_warn.map_or(true, |t| now.duration_since(t) >= RATE_WARN_INTERVAL);
             if !rate_low || due {
-                match guard.rate_hz {
-                    Some(hz) => log_warn!(
+                match guard.trip {
+                    Some(RateTrip::Gap { silent_for }) => log_warn!(
                         NODE_NAME,
-                        "Control input rate {hz:.1} Hz below control_min_rate_hz \
+                        "No control input for {:.1} s (needs >= \
+                         {control_min_rate_hz:.1} Hz): speed setpoint held at 0",
+                        silent_for.as_secs_f32()
+                    ),
+                    Some(RateTrip::Window { rate_hz }) => log_warn!(
+                        NODE_NAME,
+                        "Control input rate {rate_hz:.1} Hz below control_min_rate_hz \
                          {control_min_rate_hz:.1} Hz: speed setpoint held at 0"
                     ),
-                    None => log_warn!(
-                        NODE_NAME,
-                        "Control input too sparse to measure (min \
-                         {control_min_rate_hz:.1} Hz): speed setpoint held at 0"
-                    ),
+                    None => unreachable!("too_slow implies a trip reason"),
                 }
                 last_rate_warn = Some(now);
             }
@@ -609,13 +611,27 @@ fn send_frame(socket: &CanSocket, id: u32, payload: &[u8; 8]) -> std::io::Result
     socket.write_frame(&frame)
 }
 
+/// Why the Control input-rate guard tripped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum RateTrip {
+    /// Nothing has arrived for longer than one period at the minimum rate.
+    /// Checked first: after a publisher stops, the window still holds its old,
+    /// healthy rate, and reporting that number would say the opposite of what
+    /// happened.
+    Gap { silent_for: Duration },
+    /// Messages keep arriving, but the windowed rate is below the minimum.
+    Window { rate_hz: f32 },
+}
+
 /// Verdict of the Control input-rate guard.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct RateGuard {
+pub(crate) struct RateGuard {
     /// Windowed publish rate, `None` until enough Control messages have arrived.
-    rate_hz: Option<f32>,
+    pub(crate) rate_hz: Option<f32>,
     /// True while the rate is too low to command a speed.
-    too_slow: bool,
+    pub(crate) too_slow: bool,
+    /// Why `too_slow` is set; `None` exactly when it is not.
+    pub(crate) trip: Option<RateTrip>,
 }
 
 /// Decide whether Autoware is publishing Control fast enough to be allowed to
@@ -631,22 +647,28 @@ struct RateGuard {
 /// Both the windowed rate and the age of the newest message are checked: the
 /// window alone would keep reporting the old rate through a sudden stall until
 /// enough new samples arrived to pull the average down.
-fn rate_guard(cmd: &CommandState, min_rate_hz: f32, now: Instant) -> RateGuard {
+pub(crate) fn rate_guard(cmd: &CommandState, min_rate_hz: f32, now: Instant) -> RateGuard {
     let rate_hz = cmd.control_freq.rate_hz();
     if min_rate_hz <= 0.0 || cmd.last_control_at.is_none() {
         // Guard disabled, or nothing has been received yet — the watchdog and
         // the TX state machine own that case.
-        return RateGuard { rate_hz, too_slow: false };
+        return RateGuard { rate_hz, too_slow: false, trip: None };
     }
     let max_gap = Duration::from_secs_f32(1.0 / min_rate_hz);
-    let gap_too_long = cmd
+    let silent_for = cmd
         .last_control_at
-        .map(|t| now.saturating_duration_since(t) > max_gap)
-        .unwrap_or(true);
-    let window_too_slow = rate_hz.map_or(false, |hz| hz < min_rate_hz);
+        .map_or(Duration::MAX, |t| now.saturating_duration_since(t));
+    let trip = if silent_for > max_gap {
+        Some(RateTrip::Gap { silent_for })
+    } else {
+        rate_hz
+            .filter(|&hz| hz < min_rate_hz)
+            .map(|rate_hz| RateTrip::Window { rate_hz })
+    };
     RateGuard {
         rate_hz,
-        too_slow: gap_too_long || window_too_slow,
+        too_slow: trip.is_some(),
+        trip,
     }
 }
 
@@ -1154,7 +1176,7 @@ mod rate_guard_tests {
     //! slowly to steer a moving vehicle. It is deliberately separate from the
     //! `control_timeout_ms` watchdog, which handles silence by braking.
 
-    use super::rate_guard;
+    use super::{rate_guard, RateTrip};
     use crate::state::{CommandState, FREQ_WINDOW_LEN};
     use std::time::{Duration, Instant};
 
@@ -1188,6 +1210,10 @@ mod rate_guard_tests {
         let g = rate_guard(&c, MIN_RATE, now);
         assert!(g.too_slow);
         assert!(g.rate_hz.unwrap() < MIN_RATE);
+        match g.trip {
+            Some(RateTrip::Window { rate_hz }) => assert!(rate_hz < MIN_RATE),
+            other => panic!("slow but live input is a window trip, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1198,6 +1224,19 @@ mod rate_guard_tests {
         let g = rate_guard(&c, MIN_RATE, now);
         assert!(g.too_slow, "gap since the last message must count");
         assert!(g.rate_hz.unwrap() > MIN_RATE, "window is still optimistic");
+        // The log must say "no input for 0.3 s", not quote the stale 50 Hz.
+        match g.trip {
+            Some(RateTrip::Gap { silent_for }) => {
+                assert_eq!(silent_for, Duration::from_millis(300))
+            }
+            other => panic!("a stopped publisher is a gap trip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_passing_guard_has_no_trip_reason() {
+        let (c, now) = cmd_at_rate(Duration::from_millis(20), Duration::from_millis(5));
+        assert_eq!(rate_guard(&c, MIN_RATE, now).trip, None);
     }
 
     #[test]

@@ -22,6 +22,7 @@ use crate::dbc::{
     ACCEL_MPS2_MIN, DECEL_MPS2_MAX, DECEL_MPS2_MIN, SPEED_MPS_MAX,
     TIRE_ANGLE_DEG_MAX, TIRE_ANGLE_DEG_MIN,
 };
+use crate::can_io::{rate_guard, RateTrip};
 use crate::params::Params;
 use crate::state::{EstopSource, EstopState, SharedState, VehicleMode};
 
@@ -717,20 +718,27 @@ fn publish_diagnostics(
     // Control input rate: the TX path withholds the speed setpoint below
     // `control_min_rate_hz`, so surface why the cart is not moving. WARN, not
     // ERROR: a slow planner is a degraded input, not broken hardware.
+    // Same verdict as the TX path, so the two cannot disagree: the windowed
+    // rate alone stays healthy for a while after the publisher stops.
     if control_min_rate_hz > 0.0 && cmd.last_control_at.is_some() {
-        let rate = cmd.control_freq.rate_hz();
-        let too_slow = rate.map_or(true, |hz| hz < control_min_rate_hz);
+        let guard = rate_guard(&cmd, control_min_rate_hz, Instant::now());
+        let rate = guard.rate_hz;
         entries.push(DiagnosticStatus {
-            level: if too_slow {
+            level: if guard.too_slow {
                 DiagnosticStatus::WARN
             } else {
                 DiagnosticStatus::OK
             },
             name: "vehicle_interface/control_rate".to_string(),
-            message: if too_slow {
-                "Control input below minimum rate — speed setpoint held at 0".to_string()
-            } else {
-                "ok".to_string()
+            message: match guard.trip {
+                Some(RateTrip::Gap { silent_for }) => format!(
+                    "No control input for {:.1} s — speed setpoint held at 0",
+                    silent_for.as_secs_f32()
+                ),
+                Some(RateTrip::Window { .. }) => {
+                    "Control input below minimum rate — speed setpoint held at 0".to_string()
+                }
+                None => "ok".to_string(),
             },
             hardware_id: "cax_ads_can".to_string(),
             values: vec![
