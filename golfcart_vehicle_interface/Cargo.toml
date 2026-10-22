@@ -23,7 +23,7 @@ socketcan = "3.5"
 thiserror = "2.0"
 
 # ROS 2 dependencies (resolved via ament_index by colcon-cargo-ros2)
-rclrs = "*"
+rclrs = "0.7"
 builtin_interfaces = "*"
 std_msgs = "*"
 diagnostic_msgs = "*"
