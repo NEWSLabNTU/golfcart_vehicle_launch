@@ -32,10 +32,30 @@ pub use messages::{
 /// of the VCU speed goes through [`vcu_speed_mps`] so no site can forget it.
 pub const VCU_SPEED_KMH_TO_MPS: f64 = 1.0 / 3.6;
 
+/// The VCU floors its speed to whole km/h and sends each one 0.001 short
+/// (0.999, 1.999, ...). A reading of k km/h therefore means a true speed in
+/// [k, k + 1), mean k + 0.5: against NDT on 2026-10-28 the floored report read
+/// 0.42 m/s in Drive and 0.28 m/s in Reverse where NDT measured 0.52 and 0.42,
+/// and adding 0.5 km/h (0.14 m/s) lands both within 0.04 m/s. Without it the
+/// EKF prediction ran slow and trailed NDT by about 0.2 m while moving.
+///
+/// Applied only to a reading that sits on a whole number (within 0.002), so it
+/// switches itself off if the vendor ever sends finer steps. Zero stays zero: it
+/// means anything under 1 km/h, which has no useful midpoint.
+pub fn midpoint_of_floored_kmh(kmh: f64) -> f64 {
+    let mag = kmh.abs();
+    let whole = mag.round();
+    if whole >= 1.0 && (mag - whole).abs() <= 0.002 {
+        kmh.signum() * (whole + 0.5)
+    } else {
+        kmh
+    }
+}
+
 /// The VCU speed report in m/s, unsigned: the sign comes from the gear.
 #[allow(dead_code)]
 pub fn vcu_speed_mps(m: &VcuAdsMtr) -> f32 {
-    (m.vcu_ads_vehicle_speed() as f64 * VCU_SPEED_KMH_TO_MPS) as f32
+    (midpoint_of_floored_kmh(m.vcu_ads_vehicle_speed() as f64) * VCU_SPEED_KMH_TO_MPS) as f32
 }
 
 // ============================================================================
@@ -238,11 +258,27 @@ mod tests {
 
     #[test]
     fn vcu_speed_is_kmh_converted_to_mps() {
-        // The cart's dashboard showed 5 km/h when the report read 5.000.
+        // The cart's dashboard showed 5 km/h when the report read 5.000; the
+        // floored reading stands for [5, 6) km/h, so the report is 5.5 km/h.
         let mtr = VcuAdsMtr::new(2, 0, Gear::Drive.to_raw(), 5.0).unwrap();
         let parsed = VcuAdsMtr::try_from(mtr.raw().as_slice()).unwrap();
-        assert!((vcu_speed_mps(&parsed) - 5.0 / 3.6).abs() < 0.005);
-        assert!((vcu_speed_mps(&parsed) - 1.389).abs() < 0.005);
+        assert!((vcu_speed_mps(&parsed) - 5.5 / 3.6).abs() < 0.005);
+        assert!((vcu_speed_mps(&parsed) - 1.528).abs() < 0.005);
+    }
+
+    #[test]
+    fn floored_reading_gets_half_a_step_back() {
+        // The 2026-10-28 drive log values: 0.999 and 1.999 are 1 and 2 km/h floored.
+        assert!((midpoint_of_floored_kmh(0.999) - 1.5).abs() < 1e-9);
+        assert!((midpoint_of_floored_kmh(1.999) - 2.5).abs() < 1e-9);
+        assert!((midpoint_of_floored_kmh(-1.999) + 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_and_finer_readings_are_left_alone() {
+        assert_eq!(midpoint_of_floored_kmh(0.0), 0.0);
+        assert_eq!(midpoint_of_floored_kmh(0.4), 0.4); // under 1 km/h: no midpoint
+        assert_eq!(midpoint_of_floored_kmh(2.37), 2.37); // not a whole step: the vendor sends finer values
     }
 
     #[test]
