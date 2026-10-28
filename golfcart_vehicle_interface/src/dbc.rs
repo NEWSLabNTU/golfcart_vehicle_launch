@@ -52,6 +52,19 @@ pub fn midpoint_of_floored_kmh(kmh: f64) -> f64 {
     }
 }
 
+/// The speed *setpoint* is in km/h too, whatever `Ads_Vcu_Target_Speed`'s "m/s"
+/// label says. On 2026-10-28 the cart sat at 0 km/h for targets of 0.25 to 1.25
+/// and began to creep, reading 0.999 km/h, only once 1.5 had been held for about
+/// 3 s: a km/h number sent in what we thought was m/s. Everything we send goes
+/// through [`vcu_target_speed_raw`], as everything we read goes through
+/// [`vcu_speed_mps`].
+pub const VCU_SPEED_MPS_TO_KMH: f64 = 3.6;
+
+/// Planner speed in m/s as the number the VCU wants in `Ads_Vcu_Target_Speed`.
+pub fn vcu_target_speed_raw(speed_mps: f32) -> f32 {
+    (speed_mps as f64 * VCU_SPEED_MPS_TO_KMH) as f32
+}
+
 /// The VCU speed report in m/s, unsigned: the sign comes from the gear.
 #[allow(dead_code)]
 pub fn vcu_speed_mps(m: &VcuAdsMtr) -> f32 {
@@ -264,6 +277,13 @@ mod tests {
         let parsed = VcuAdsMtr::try_from(mtr.raw().as_slice()).unwrap();
         assert!((vcu_speed_mps(&parsed) - 5.5 / 3.6).abs() < 0.005);
         assert!((vcu_speed_mps(&parsed) - 1.528).abs() < 0.005);
+    }
+
+    #[test]
+    fn the_setpoint_goes_out_in_kmh() {
+        assert!((vcu_target_speed_raw(0.75) - 2.7).abs() < 1e-5);
+        assert!((vcu_target_speed_raw(1.5) - 5.4).abs() < 1e-5);
+        assert_eq!(vcu_target_speed_raw(0.0), 0.0);
     }
 
     #[test]

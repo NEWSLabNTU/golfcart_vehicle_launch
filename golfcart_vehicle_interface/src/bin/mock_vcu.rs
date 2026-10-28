@@ -238,7 +238,8 @@ fn rx_loop(socket: CanSocket, world: Arc<Mutex<World>>, running: Arc<AtomicBool>
             Messages::AdsVcuMtr(m) => {
                 let mut w = world.lock();
                 w.motor_en = m.ads_vcu_motor_en().into();
-                w.target_speed_mps = m.ads_vcu_target_speed();
+                // The wire value is km/h, as in the real VCU.
+            w.target_speed_mps = m.ads_vcu_target_speed() / 3.6;
                 w.target_gear = m.ads_vcu_target_gear_raw();
             }
             Messages::AdsVcuEps(m) => {

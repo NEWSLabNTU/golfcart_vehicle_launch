@@ -788,7 +788,8 @@ fn build_frames(
         actual_gear.to_raw(),
         if motor_active { cmd.target_throttle_pct } else { 0.0 },
         if motor_active { cmd.target_acceleration_mps2.max(0.0) } else { 0.0 },
-        if motor_active { target_speed_mps } else { 0.0 },
+        // km/h on the wire (dbc::VCU_SPEED_MPS_TO_KMH), like the report.
+        if motor_active { crate::dbc::vcu_target_speed_raw(target_speed_mps) } else { 0.0 },
         chksum,
     )
     .expect("AdsVcuMtr fields are clamped at the call site");
@@ -1054,7 +1055,8 @@ mod protection_tests {
         let mut c = driving_cmd();
         c.target_speed_mps = 2.0;
         let (mtr, eps) = mtr_eps(build_frames(&c, TxMode::Driving, 0, 0.2, Gear::Drive, None, NO_FLIP));
-        assert!((mtr.ads_vcu_target_speed() - 2.0).abs() < 0.05);
+        // 2.0 m/s from the planner is 7.2 on the wire: the VCU reads km/h.
+        assert!((mtr.ads_vcu_target_speed() - 7.2).abs() < 0.05);
         assert!((eps.ads_vcu_target_tire_angle() - 0.2_f32.to_degrees()).abs() < 0.5);
     }
 
