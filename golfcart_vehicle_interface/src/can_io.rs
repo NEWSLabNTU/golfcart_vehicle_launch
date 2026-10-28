@@ -305,6 +305,10 @@ fn tx_loop(
     let mut last_rate_warn: Option<Instant> = None;
     let mut rate_ok_since: Option<Instant> = None;
     let mut prev_vehicle_mode = VehicleMode::default();
+    // How long the motor has been held for want of the VCU entering the gear we
+    // sent, and when that was last reported. See `gear_confirmed`.
+    let mut gear_wait_since: Option<Instant> = None;
+    let mut last_gear_wait_warn: Option<Instant> = None;
     while running.load(Ordering::Relaxed) {
         // Control mode is the vehicle's to declare: the driver switches the
         // subsystems over, we read the four reported states back. Commands go
@@ -471,6 +475,45 @@ fn tx_loop(
         const TX_FAIL_THRESHOLD: u32 = 25; // ~250 ms at 100 Hz
         const TX_LOG_INTERVAL: Duration = Duration::from_secs(1);
         let mut tick_failed = false;
+
+        // The VCU only runs the motor in the gear it has actually entered. A
+        // shift takes it a moment after we send the request, and a lever or
+        // interlock can hold it back, so a torque setpoint sent before its own
+        // report says Drive (or Reverse) is a request nothing is honouring.
+        // Keep the gear request on the wire, hold the motor at zero, and say
+        // so; the first frame after the VCU reports the gear releases it.
+        let vcu_gear = {
+            let s = state.status.lock();
+            match (s.mtr, s.mtr_at) {
+                (Some(m), Some(at)) if at.elapsed() <= MTR_FRESH_FOR_TX => {
+                    Some(Gear::from_raw(m.vcu_ads_gear_position_raw()))
+                }
+                _ => None,
+            }
+        };
+        if driving && !gear_confirmed(actual_gear, vcu_gear) {
+            cmd_snapshot.target_speed_mps = 0.0;
+            cmd_snapshot.target_acceleration_mps2 = 0.0;
+            cmd_snapshot.target_throttle_pct = 0.0;
+            let since = *gear_wait_since.get_or_insert(now);
+            let due = last_gear_wait_warn.map_or(
+                now.duration_since(since) >= Duration::from_secs(2),
+                |t| now.duration_since(t) >= RATE_WARN_INTERVAL,
+            );
+            if due {
+                log_warn!(
+                    NODE_NAME,
+                    "motor held at zero: we are sending gear {:?} and the VCU reports {:?}",
+                    actual_gear,
+                    vcu_gear
+                );
+                last_gear_wait_warn = Some(now);
+            }
+        } else if gear_wait_since.take().is_some() {
+            log_info!(NODE_NAME, "the VCU is in gear {:?}: motor released", actual_gear);
+            last_gear_wait_warn = None;
+        }
+
         let frames = build_frames(
             &cmd_snapshot,
             mode,
@@ -682,6 +725,15 @@ pub(crate) fn motor_frame_enabled(cmd: &CommandState, gear: Gear) -> bool {
             .expect("MTR decodes")
             .ads_vcu_motor_en(),
     )
+}
+
+/// Whether the VCU is in the gear we are sending, for the gears that move the
+/// cart. Park and Neutral need no confirmation: the motor is off in both.
+fn gear_confirmed(sent: Gear, reported: Option<Gear>) -> bool {
+    match sent {
+        Gear::Drive | Gear::Reverse => reported == Some(sent),
+        Gear::Parking | Gear::Neutral => true,
+    }
 }
 
 fn build_frames(
@@ -1063,6 +1115,29 @@ mod heartbeat_tests {
             [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5F, 0x00],
             "VEHICLE heartbeat: Ads_Status=Running, rolling counter, nothing else"
         );
+    }
+
+    #[test]
+    fn the_motor_waits_for_the_gear_it_asked_for() {
+        use crate::dbc::Gear::*;
+        assert!(super::gear_confirmed(Drive, Some(Drive)));
+        assert!(super::gear_confirmed(Reverse, Some(Reverse)));
+        // Asked for Drive, the VCU still says Neutral or Park, or says nothing.
+        assert!(!super::gear_confirmed(Drive, Some(Neutral)));
+        assert!(!super::gear_confirmed(Drive, Some(Parking)));
+        assert!(!super::gear_confirmed(Drive, None));
+        // The wrong direction is not a confirmation either.
+        assert!(!super::gear_confirmed(Reverse, Some(Drive)));
+        assert!(!super::gear_confirmed(Drive, Some(Reverse)));
+    }
+
+    #[test]
+    fn park_and_neutral_need_no_confirmation() {
+        use crate::dbc::Gear::*;
+        for reported in [None, Some(Parking), Some(Neutral), Some(Drive), Some(Reverse)] {
+            assert!(super::gear_confirmed(Parking, reported));
+            assert!(super::gear_confirmed(Neutral, reported));
+        }
     }
 
     #[test]
