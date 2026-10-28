@@ -385,7 +385,7 @@ fn tx_loop(
             let s = state.status.lock();
             match (s.mtr, s.mtr_at) {
                 (Some(m), Some(at)) if at.elapsed() <= MTR_FRESH_FOR_TX => {
-                    (m.vcu_ads_vehicle_speed().abs() as f32, true)
+                    (crate::dbc::vcu_speed_mps(&m).abs(), true)
                 }
                 _ => (0.0, false),
             }

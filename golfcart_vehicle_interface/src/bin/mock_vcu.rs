@@ -332,7 +332,9 @@ fn main() -> Result<()> {
             let gear_raw = snapshot.target_gear;
             let throttle_pct: u8 = ((snapshot.speed_mps.abs() / 5.0) * 100.0)
                 .clamp(0.0, 255.0) as u8;
-            let mtr = VcuAdsMtr::new(driving_state, throttle_pct, gear_raw, snapshot.speed_mps)
+            // The real VCU reports km/h in this field (see dbc::VCU_SPEED_KMH_TO_MPS),
+            // unsigned: direction comes from the gear.
+            let mtr = VcuAdsMtr::new(driving_state, throttle_pct, gear_raw, snapshot.speed_mps.abs() * 3.6)
                 .expect("MTR fields in range");
             let _ = send_frame(&tx_socket, VcuAdsMtr::MESSAGE_ID, mtr.raw());
         }

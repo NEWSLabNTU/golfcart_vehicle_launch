@@ -480,6 +480,21 @@ pub fn split_longitudinal(
     Longitudinal { accel, decel }
 }
 
+/// Signed longitudinal speed for `VelocityReport` from the VCU's speed and gear.
+///
+/// The VCU's `Vcu_Ads_Vehicle_Speed` is declared signed in the DBC but is a
+/// magnitude: a 2026-10-28 drive log read +0.999 to +2.999 m/s the whole time
+/// the gear was Reverse. Autoware's twist, and so the EKF and `gyro_odometer`,
+/// want negative speed when backing up, so the sign comes from the gear, as it
+/// does on the command side. A negative VCU speed is left alone: if the vendor
+/// ever signs it, the report must not be flipped back to forward.
+pub fn signed_speed(speed_mps: f32, gear: Gear) -> f32 {
+    match gear {
+        Gear::Reverse => -speed_mps.abs(),
+        _ => speed_mps,
+    }
+}
+
 /// Yaw rate (rad/s) for `VelocityReport.heading_rate`, from the kinematic
 /// bicycle model: `v * tan(delta) / wheel_base`.
 ///
@@ -524,7 +539,8 @@ fn publish_status(
             stamp: stamp.clone(),
             frame_id: frame_id.to_string(),
         };
-        let velocity = mtr.vcu_ads_vehicle_speed();
+        let gear = Gear::from_raw(mtr.vcu_ads_gear_position_raw());
+        let velocity = signed_speed(crate::dbc::vcu_speed_mps(&mtr), gear);
         let _ = pubs.velocity.publish(VelocityReport {
             header,
             longitudinal_velocity: velocity,
@@ -536,7 +552,7 @@ fn publish_status(
         });
         let _ = pubs.gear.publish(GearReport {
             stamp: stamp.clone(),
-            report: dbc_gear_to_autoware(Gear::from_raw(mtr.vcu_ads_gear_position_raw())),
+            report: dbc_gear_to_autoware(gear),
         });
     }
 
@@ -929,7 +945,7 @@ fn publish_diagnostics(
                 "speed_mps",
                 status
                     .mtr
-                    .map(|m| format!("{:.3}", m.vcu_ads_vehicle_speed()))
+                    .map(|m| format!("{:.3}", crate::dbc::vcu_speed_mps(&m)))
                     .unwrap_or_else(|| "n/a".to_string()),
             ),
             kv(
@@ -1034,6 +1050,40 @@ mod mode_request_tests {
     fn manual_acknowledged_once_the_driver_has_switched_back() {
         assert!(mode_request_acknowledged(false, VehicleMode::Manual, false));
         assert!(mode_request_acknowledged(false, VehicleMode::Abnormal, false));
+    }
+}
+
+#[cfg(test)]
+mod signed_speed_tests {
+    use super::*;
+
+    #[test]
+    fn reverse_gear_makes_the_speed_negative() {
+        assert_eq!(signed_speed(1.999, Gear::Reverse), -1.999);
+    }
+
+    #[test]
+    fn drive_keeps_the_sign() {
+        assert_eq!(signed_speed(2.999, Gear::Drive), 2.999);
+    }
+
+    #[test]
+    fn stopped_in_any_gear_is_zero() {
+        for g in [Gear::Parking, Gear::Drive, Gear::Neutral, Gear::Reverse] {
+            assert_eq!(signed_speed(0.0, g).abs(), 0.0);
+        }
+    }
+
+    #[test]
+    fn neutral_and_parking_roll_with_the_vcu_sign() {
+        // Rolling in neutral has no direction from the gear; report what the VCU says.
+        assert_eq!(signed_speed(0.999, Gear::Neutral), 0.999);
+        assert_eq!(signed_speed(0.999, Gear::Parking), 0.999);
+    }
+
+    #[test]
+    fn a_vcu_that_signs_its_speed_is_not_flipped_back() {
+        assert_eq!(signed_speed(-1.5, Gear::Reverse), -1.5);
     }
 }
 

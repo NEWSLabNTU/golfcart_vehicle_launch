@@ -26,6 +26,18 @@ pub use messages::{
     VcuAdsVehicle,
 };
 
+/// `Vcu_Ads_Vehicle_Speed` is in km/h, whatever the DBC's "m/s" unit says
+/// (confirmed on the cart 2026-10-28: the drive log stepped 0, 0.999, 1.999, ...
+/// 5.000, whole units each 0.001 short, which is integer km/h). Every consumer
+/// of the VCU speed goes through [`vcu_speed_mps`] so no site can forget it.
+pub const VCU_SPEED_KMH_TO_MPS: f64 = 1.0 / 3.6;
+
+/// The VCU speed report in m/s, unsigned: the sign comes from the gear.
+#[allow(dead_code)]
+pub fn vcu_speed_mps(m: &VcuAdsMtr) -> f32 {
+    (m.vcu_ads_vehicle_speed() as f64 * VCU_SPEED_KMH_TO_MPS) as f32
+}
+
 // ============================================================================
 // DBC physical-range limits used to clamp Autoware setpoints before encode.
 // Numeric values come from the vendor DBC and are emitted by `build.rs` into
@@ -222,6 +234,15 @@ mod tests {
         .unwrap();
         let parsed = AdsVcuEps::try_from(eps.raw().as_slice()).unwrap();
         assert!((parsed.ads_vcu_target_tire_angle() - angle).abs() < 0.01);
+    }
+
+    #[test]
+    fn vcu_speed_is_kmh_converted_to_mps() {
+        // The cart's dashboard showed 5 km/h when the report read 5.000.
+        let mtr = VcuAdsMtr::new(2, 0, Gear::Drive.to_raw(), 5.0).unwrap();
+        let parsed = VcuAdsMtr::try_from(mtr.raw().as_slice()).unwrap();
+        assert!((vcu_speed_mps(&parsed) - 5.0 / 3.6).abs() < 0.005);
+        assert!((vcu_speed_mps(&parsed) - 1.389).abs() < 0.005);
     }
 
     #[test]
