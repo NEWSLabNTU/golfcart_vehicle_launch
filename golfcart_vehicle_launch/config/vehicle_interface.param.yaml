@@ -27,6 +27,14 @@
     # can be changed at runtime; this is the ceiling. Effective cap is
     # min(max_speed_mps, 6.944), the ROOTS 25 km/h limit.
     max_speed_mps: 1.5
+    # Floor for any nonzero speed setpoint (m/s; 0 disables, never above
+    # max_speed_mps). 1.5 m/s is 5.4 km/h: the cart stalls on a bump at a crawl, so
+    # a planner request below this is raised to it. A setpoint of zero is left
+    # alone, so stopping is unaffected. With max_speed_mps at 1.5 the cart moves
+    # at exactly 1.5 m/s whatever the planner asks (planning_speed_limit, the 2
+    # km/h lane tags and slow_indoor all sit below it): raise max_speed_mps to
+    # give the planner room above the floor.
+    min_speed_mps: 1.5
     # Commanded decelerations below this (m/s^2) are sent as none. Any
     # Target_Deceleration > 0 makes the VCU cut motor torque, yet ROOTS does
     # not brake below 1.2 m/s^2, so Autoware's PID dithering around zero at

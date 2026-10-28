@@ -29,6 +29,11 @@ pub struct Params {
     /// Reverse is also capped at the same magnitude. Useful for low-speed
     /// commissioning runs.
     pub max_speed_mps: f32,
+    /// Floor for any nonzero speed setpoint (m/s, 0 disables, never above
+    /// `max_speed_mps`). The cart's speed loop stalls on a bump or a lip at a
+    /// crawl, so a planner asking for 0.3 m/s needs more than 0.3 to get over
+    /// it. A setpoint of zero is left alone, so stopping is unaffected.
+    pub min_speed_mps: f32,
     /// Maximum forward acceleration setpoint allowed (m/s², unsigned).
     pub max_accel_mps2: f32,
     /// Maximum brake deceleration setpoint allowed (m/s², unsigned).
@@ -135,6 +140,12 @@ impl Params {
             .mandatory()?
             .get();
 
+        let min_speed_mps = node
+            .declare_parameter("min_speed_mps")
+            .default(0.0)
+            .mandatory()?
+            .get();
+
         let max_accel_mps2 = node
             .declare_parameter("max_accel_mps2")
             .default(2.0)
@@ -234,6 +245,7 @@ impl Params {
             control_min_rate_hz: control_min_rate_hz as f32,
             report_timeout_ms: report_timeout_ms as u64,
             max_speed_mps: max_speed_mps as f32,
+            min_speed_mps: min_speed_mps as f32,
             max_accel_mps2: max_accel_mps2 as f32,
             max_decel_mps2: max_decel_mps2 as f32,
             decel_deadband_mps2: decel_deadband_mps2 as f32,

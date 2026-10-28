@@ -69,6 +69,7 @@ impl VehicleInterfaceNode {
             opts
         };
         let max_speed = params.max_speed_mps;
+        let min_speed = params.min_speed_mps;
         let max_accel = params.max_accel_mps2;
         let max_decel = params.max_decel_mps2;
         let decel_deadband = params.decel_deadband_mps2;
@@ -84,7 +85,11 @@ impl VehicleInterfaceNode {
                 // comes from the gear, not the sign. Take |velocity|, then clamp
                 // to the user-policy cap, the ROOTS 25 km/h ceiling, and finally
                 // the DBC signal max so the encode call never errors.
-                let speed = commanded_speed(msg.longitudinal.velocity as f32, max_speed);
+                let speed = with_minimum_speed(
+                    commanded_speed(msg.longitudinal.velocity as f32, max_speed),
+                    min_speed,
+                    max_speed,
+                );
 
                 let Longitudinal { accel, decel } = split_longitudinal(
                     msg.longitudinal.acceleration as f32,
@@ -447,6 +452,19 @@ pub struct Longitudinal {
 pub fn commanded_speed(velocity_mps: f32, max_speed_mps: f32) -> f32 {
     let cap = max_speed_mps.min(ROOTS_MAX_SPEED_MPS).min(SPEED_MPS_MAX);
     clamp_f32(velocity_mps.abs(), 0.0, cap)
+}
+
+/// Lift a nonzero speed setpoint to at least `min_speed_mps`, never above the
+/// ceiling. Zero (and anything under 0.05 m/s, which Autoware sends while it
+/// brings the cart to rest) is left alone, so stopping is unaffected: the stop
+/// itself is the planner's deceleration and the brake, not this setpoint.
+pub fn with_minimum_speed(speed_mps: f32, min_speed_mps: f32, max_speed_mps: f32) -> f32 {
+    const COMMANDS_MOTION_ABOVE: f32 = 0.05;
+    if speed_mps > COMMANDS_MOTION_ABOVE {
+        speed_mps.max(min_speed_mps.min(max_speed_mps))
+    } else {
+        speed_mps
+    }
 }
 
 /// Split Autoware's signed longitudinal acceleration into the VCU's separate
@@ -1204,7 +1222,34 @@ mod longitudinal_tests {
 
 #[cfg(test)]
 mod commanded_speed_tests {
-    use super::{commanded_speed, ROOTS_MAX_SPEED_MPS};
+    use super::{commanded_speed, with_minimum_speed, ROOTS_MAX_SPEED_MPS};
+
+    #[test]
+    fn a_crawl_request_is_lifted_to_the_floor() {
+        assert_eq!(with_minimum_speed(0.3, 1.5, 1.5), 1.5);
+        assert_eq!(with_minimum_speed(0.75, 1.5, 1.5), 1.5);
+    }
+
+    #[test]
+    fn a_faster_request_is_untouched() {
+        assert_eq!(with_minimum_speed(1.8, 1.5, 3.0), 1.8);
+    }
+
+    #[test]
+    fn zero_and_the_stopping_trickle_are_left_alone() {
+        assert_eq!(with_minimum_speed(0.0, 1.5, 1.5), 0.0);
+        assert_eq!(with_minimum_speed(0.04, 1.5, 1.5), 0.04);
+    }
+
+    #[test]
+    fn the_floor_never_goes_above_the_ceiling() {
+        assert_eq!(with_minimum_speed(0.3, 2.0, 1.2), 1.2);
+    }
+
+    #[test]
+    fn a_zero_floor_changes_nothing() {
+        assert_eq!(with_minimum_speed(0.3, 0.0, 1.5), 0.3);
+    }
 
     #[test]
     fn below_the_cap_passes_through() {
