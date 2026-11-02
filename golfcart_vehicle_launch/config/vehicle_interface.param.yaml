@@ -20,20 +20,20 @@
     # total silence is handled by control_timeout_ms. 0 disables the check.
     control_min_rate_hz: 10.0
     # Hard ceiling on the commanded speed (m/s), whatever Autoware asks for;
-    # the code default is 5.0. 1.5 is the Phase 8 S4 first-run cap: the first
-    # supervised autonomous drives stay at a walking pace until steering sign,
-    # braking and localization are proven on the cart. Raise it deliberately.
+    # the code default is 5.0. 2.5 (9 km/h) since 2026-11-02, raised from the
+    # Phase 8 S4 first-run cap of 1.5 after the first supervised autonomous run:
+    # at 1.5 it equalled min_speed_mps and left the planner no speed range at
+    # all. Raise it deliberately.
     # Autoware's planning_speed_limit is only the planner's startup default and
     # can be changed at runtime; this is the ceiling. Effective cap is
     # min(max_speed_mps, 6.944), the ROOTS 25 km/h limit.
-    max_speed_mps: 1.5
+    max_speed_mps: 2.5
     # Floor for any nonzero speed setpoint (m/s; 0 disables, never above
     # max_speed_mps). 1.5 m/s is 5.4 km/h: the cart stalls on a bump at a crawl, so
     # a planner request below this is raised to it. A setpoint of zero is left
-    # alone, so stopping is unaffected. With max_speed_mps at 1.5 the cart moves
-    # at exactly 1.5 m/s whatever the planner asks (planning_speed_limit, the 2
-    # km/h lane tags and slow_indoor all sit below it): raise max_speed_mps to
-    # give the planner room above the floor.
+    # alone, so stopping is unaffected. The planner's range is therefore 1.5 to
+    # max_speed_mps; a request below the floor, such as a 5.4 km/h lane or the
+    # tail of a deceleration, runs at the floor.
     min_speed_mps: 1.5
     # Commanded decelerations below this (m/s^2) are sent as none. Any
     # Target_Deceleration > 0 makes the VCU cut motor torque, yet ROOTS does
