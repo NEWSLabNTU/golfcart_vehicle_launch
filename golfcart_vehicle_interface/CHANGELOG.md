@@ -19,6 +19,18 @@ deceleration is commanded).
 
 ### Added
 
+- **The ECU-hazard latch clears itself in Manual** (`fault_clear_hold_ms`,
+  default 2000). The VCU sets `Vcu_Ads_Error_Code_Mtr` / `_Sys` for a frame or
+  a few 1-3 s after every dashboard AUTO → Manual (2026-11-09, session
+  `20261109_232854`); the latch then held `ControlModeReport` at `DISENGAGED`,
+  refused the next AUTONOMOUS request and likely safety-braked the cart out of
+  the driver's next AUTO, until MANUAL was sent by hand. It now clears once
+  all four subsystems report Manual and no hazard bit has been seen for the
+  hold; never in Autonomous or Abnormal, and a hazard on entering AUTO
+  re-latches at once. The latch is split: `hazard_latched` (ECU) and
+  `tx_fault_latched` (persistent CAN TX failure), and the TX one is still
+  cleared only by MANUAL / NO_COMMAND. Diagnostics list both.
+
 - **`VelocityReport.heading_rate` is derived, not hardcoded `0.0`.** The VCU
   reports no yaw rate, so it is `v * tan(steering_tire_angle) / wheel_base`
   from the latest fresh EPS report, in the same REP-103 sign as the published

@@ -113,7 +113,7 @@ known. A commanded deceleration smaller than `decel_deadband_mps2` is sent as
 Checked in `TxMode::evaluate`, first match wins:
 
 1. `vehicle_mode != Autonomous` → `Idle` (mode gate — nothing else is consulted)
-2. `fault_latched || estop` → `SafetyBrake`, where `estop` = driver e-stop OR
+2. `fault_latched` (ECU hazard OR CAN TX latch) `|| estop` → `SafetyBrake`, where `estop` = driver e-stop OR
    MRM e-stop (see [E-stop sources](#e-stop-sources))
 3. `was_driving && stale` → `SafetyBrake`
 4. `!stale` → `Driving`
@@ -309,7 +309,7 @@ remaps to Autoware-standard names.
 
 | Topic (after remap) | Type | Purpose |
 |---|---|---|
-| `/control/control_mode_request` | `autoware_vehicle_msgs/ControlModeCommand` | `AUTONOMOUS` cannot engage anything — the driver does that on the vehicle — so it is an acknowledgement only: `success=true` iff the VCU already reports all four subsystems autonomous and no fault is latched. `MANUAL` / `NO_COMMAND` clears `fault_latched` and zeroes held setpoints. `AUTONOMOUS_STEER_ONLY` / `AUTONOMOUS_VELOCITY_ONLY` rejected (not implemented). |
+| `/control/control_mode_request` | `autoware_vehicle_msgs/ControlModeCommand` | `AUTONOMOUS` cannot engage anything — the driver does that on the vehicle — so it is an acknowledgement only: `success=true` iff the VCU already reports all four subsystems autonomous and no fault is latched. `MANUAL` / `NO_COMMAND` clears both fault latches and zeroes held setpoints. `AUTONOMOUS_STEER_ONLY` / `AUTONOMOUS_VELOCITY_ONLY` rejected (not implemented). |
 
 ### QoS
 
@@ -327,6 +327,7 @@ publisher conventions. Mismatched QoS would silently drop all messages.
 | `control_timeout_ms` | i64 | 500 | Max age of a Control msg before TX trips into `SafetyBrake`. |
 | `control_min_rate_hz` | f32 | 10.0 | Minimum Control publish rate to command a speed. Below it the speed setpoint is held at 0, with a throttled warning and a `vehicle_interface/control_rate` WARN diagnostic. Steering, gear and brake still pass. 0 disables. |
 | `report_timeout_ms` | i64 | 1000 | Max age of a VCU_ADS_VEHICLE frame before status counts as stale. |
+| `fault_clear_hold_ms` | i64 | 2000 | Time in `Manual` with no VCU hazard bit before the ECU-hazard latch clears itself. 0 disables. The CAN TX latch never auto-clears. |
 | `max_speed_mps` | f64 | 5.0 (param file: 2.5) | Hard cap on speed setpoint magnitude; the shipped param file sets 2.5 (9 km/h), raised from the Phase 8 S4 first-run cap of 1.5. Autoware's `planning_speed_limit` is only a default, this is the ceiling. Effective cap is `min(max_speed_mps, 6.944)` — ROOTS tops out at 25 km/h. Direction is set by the gear; the setpoint is always non-negative. |
 | `max_accel_mps2` | f64 | 2.0 | Cap on forward accel setpoint. |
 | `max_decel_mps2` | f64 | 4.0 | Cap on brake decel setpoint. |
@@ -348,8 +349,12 @@ publisher conventions. Mismatched QoS would silently drop all messages.
   `control_timeout_ms`.
 - VCU report freshness: stale `VCU_ADS_VEHICLE` → `ControlModeReport::NOT_READY`,
   diag STALE; per-frame `frame_{mtr,eps,brk}` STALE entries.
-- ECU hazard latch: any of `Estop` / `Error_Code_*` bits → `fault_latched=true`,
-  cleared only by explicit `MANUAL` / `NO_COMMAND` request.
+- ECU hazard latch: any of `Estop` / `Error_Code_*` bits → `hazard_latched=true`,
+  cleared by an explicit `MANUAL` / `NO_COMMAND` request, or on its own once the
+  vehicle is in `Manual` (all four subsystems, fresh frames) with no hazard bit
+  for `fault_clear_hold_ms`. Never in `Autonomous` or `Abnormal`. The VCU
+  raises `Error_Code_Mtr` / `_Sys` for a frame or a few 1-3 s after every
+  dashboard AUTO → Manual (2026-11-09), which otherwise refused the next AUTO.
 - Driver override: any subsystem the driver switches back to `Manual` breaks
   the all-four-`Autonomous` unanimity, so the mode gate stops commanding on the
   next tick — no separate detection path, and it cannot be missed by watching
@@ -361,7 +366,8 @@ publisher conventions. Mismatched QoS would silently drop all messages.
   `R` — so it is clamped at `0` both on the subscriber side and again per
   frame; `NaN` folds to `0`.
 - Persistent CAN TX failure: `≥ 25` consecutive failed ticks → set
-  `fault_latched`, surface `vehicle_interface/can_tx` ERROR diag, attempt
+  `tx_fault_latched` (never auto-cleared; `MANUAL` / `NO_COMMAND` only),
+  surface `vehicle_interface/can_tx` ERROR diag, attempt
   socket reopen every 50 ticks.
 - CAN socket bounce: RX/TX threads reopen socket on persistent error
   (cable yank, USB-CAN reset).

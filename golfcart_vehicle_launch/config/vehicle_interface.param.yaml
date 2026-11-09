@@ -19,6 +19,16 @@
     # blind between updates. Steering, gear and brake still pass through, and
     # total silence is handled by control_timeout_ms. 0 disables the check.
     control_min_rate_hz: 10.0
+    # How long (ms) the vehicle must sit in Manual (all four VCU subsystems,
+    # fresh frames) with no VCU hazard bit before the ECU-hazard latch clears
+    # itself; 0 disables. On 2026-11-09 (session 20261109_232854) the VCU set
+    # Vcu_Ads_Error_Code_Mtr for a frame or a few 1-3 s after every dashboard
+    # AUTO -> Manual; the latch then held control_mode at DISENGAGED and refused
+    # the next AUTO until MANUAL was sent by hand. In Manual we command nothing,
+    # so the latch protects nothing there, and a hazard still present on
+    # entering AUTO re-latches at once. The CAN TX failure latch never clears
+    # on its own.
+    fault_clear_hold_ms: 2000
     # Hard ceiling on the commanded speed (m/s), whatever Autoware asks for;
     # the code default is 5.0. 2.5 (9 km/h) since 2026-11-02, raised from the
     # Phase 8 S4 first-run cap of 1.5 after the first supervised autonomous run:

@@ -21,7 +21,7 @@ use crate::dbc::{
     checksum_stub, AdsVcuBrk, AdsVcuEps, AdsVcuMtr, AdsVcuVehicle, BlinkerCtrl, BrakeMode, EpsMode,
     Gear, Messages, VcuAdsVehicle,
 };
-use crate::state::{CommandState, SharedState, VehicleMode};
+use crate::state::{CommandState, HazardLatchEvent, SharedState, VehicleMode};
 
 const NODE_NAME: &str = "golfcart_vehicle_interface";
 
@@ -73,6 +73,7 @@ pub fn spawn(
     gear_config: GearShiftConfig,
     steering_sign: f32,
     control_min_rate_hz: f32,
+    fault_clear_hold: Duration,
     state: Arc<SharedState>,
     running: Arc<AtomicBool>,
 ) -> Result<CanThreads> {
@@ -90,7 +91,16 @@ pub fn spawn(
     let rx_iface = interface_owned.clone();
     let rx = thread::Builder::new()
         .name("can_rx".into())
-        .spawn(move || rx_loop(rx_socket, rx_iface, rx_state, rx_running))?;
+        .spawn(move || {
+            rx_loop(
+                rx_socket,
+                rx_iface,
+                rx_state,
+                rx_running,
+                report_timeout,
+                fault_clear_hold,
+            )
+        })?;
 
     let tx_state = Arc::clone(&state);
     let tx_running = Arc::clone(&running);
@@ -131,6 +141,8 @@ fn rx_loop(
     interface: String,
     state: Arc<SharedState>,
     running: Arc<AtomicBool>,
+    report_timeout: Duration,
+    fault_clear_hold: Duration,
 ) {
     // Reopen budget: count consecutive non-timeout errors, attempt reopen
     // after threshold. Survives interface bounces (cable yank, USB-CAN
@@ -216,13 +228,14 @@ fn rx_loop(
                 s.brk_freq.record(now);
             }
             Messages::VcuAdsVehicle(m) => {
-                {
+                let vehicle_mode = {
                     let mut s = state.status.lock();
                     s.veh = Some(m);
                     s.veh_at = Some(now);
                     s.veh_freq.record(now);
-                }
-                handle_vehicle_status(&state, &m);
+                    s.vehicle_mode(report_timeout)
+                };
+                handle_vehicle_status(&state, &m, vehicle_mode, now, fault_clear_hold);
             }
             // ADS_VCU_* frames are TX-only from our side; ignore loopback.
             _ => {}
@@ -232,13 +245,20 @@ fn rx_loop(
 
 /// On every VCU_ADS_VEHICLE frame, look for hazard signals and latch a fault
 /// if any are set. A latched fault forces the TX loop into safety-brake (while
-/// the vehicle is in `Autonomous`) until the user issues a MANUAL/NO_COMMAND
-/// request.
+/// the vehicle is in `Autonomous`) until a MANUAL/NO_COMMAND request, or until
+/// the vehicle has sat in `Manual` with no hazard bit for `fault_clear_hold`
+/// (`CommandState::update_hazard_latch`).
 ///
 /// Driver override needs no handling here: the driver switching any subsystem
 /// back to `Manual` breaks the all-four-`Autonomous` unanimity, so the TX loop
 /// stops commanding on its own (see `TxMode::evaluate`).
-fn handle_vehicle_status(state: &Arc<SharedState>, m: &VcuAdsVehicle) {
+fn handle_vehicle_status(
+    state: &Arc<SharedState>,
+    m: &VcuAdsVehicle,
+    vehicle_mode: VehicleMode,
+    now: Instant,
+    fault_clear_hold: Duration,
+) {
     let estop = m.vcu_ads_estop_raw();
     let err_sys = m.vcu_ads_error_code_sys_raw();
     let err_mtr = m.vcu_ads_error_code_mtr_raw();
@@ -246,21 +266,28 @@ fn handle_vehicle_status(state: &Arc<SharedState>, m: &VcuAdsVehicle) {
     let err_brk = m.vcu_ads_error_code_brk_raw();
     let fault = estop || err_sys || err_mtr || err_eps || err_brk;
 
-    if !fault {
-        return;
-    }
-
+    // `status` was released by the caller; `command` alone here.
     let mut cmd = state.command.lock();
-    if !cmd.fault_latched {
-        // Log only on the rising edge — frames arrive at ~50 Hz and we don't
-        // want to spam.
-        log_error!(
+    match cmd.update_hazard_latch(fault, vehicle_mode, now, fault_clear_hold) {
+        // Edges only — frames arrive at ~50 Hz.
+        HazardLatchEvent::Latched => log_error!(
             NODE_NAME,
-            "ECU hazard latched: estop={} err_sys={} err_mtr={} err_eps={} err_brk={}",
-            estop, err_sys, err_mtr, err_eps, err_brk
-        );
+            "ECU hazard latched: estop={} err_sys={} err_mtr={} err_eps={} err_brk={} \
+             vehicle_mode={:?}",
+            estop, err_sys, err_mtr, err_eps, err_brk, vehicle_mode
+        ),
+        HazardLatchEvent::AutoCleared => log_warn!(
+            NODE_NAME,
+            "ECU hazard latch cleared: vehicle in Manual, no hazard for {:.1} s{}",
+            fault_clear_hold.as_secs_f32(),
+            if cmd.tx_fault_latched {
+                " (CAN TX fault latch still set)"
+            } else {
+                ""
+            }
+        ),
+        HazardLatchEvent::Unchanged => {}
     }
-    cmd.fault_latched = true;
 }
 
 fn tx_loop(
@@ -549,7 +576,7 @@ fn tx_loop(
                     "CAN TX failing for {TX_FAIL_THRESHOLD} ticks; latching fault"
                 );
                 let mut c = state.command.lock();
-                c.fault_latched = true;
+                c.tx_fault_latched = true;
                 c.tx_failed = true;
             }
             // Try reopening the socket every TX_REOPEN_INTERVAL ticks while
@@ -572,9 +599,9 @@ fn tx_loop(
                 }
             }
         } else if consecutive_tx_errors > 0 {
-            // Recovery — clear the diag flag but leave fault_latched alone:
-            // operator must explicitly disengage to clear the latch (matches
-            // ECU-fault recovery semantics).
+            // Recovery — clear the diag flag but leave tx_fault_latched
+            // alone: operator must explicitly send MANUAL/NO_COMMAND to clear
+            // it. Unlike the ECU-hazard latch it never clears on its own.
             consecutive_tx_errors = 0;
             let mut c = state.command.lock();
             c.tx_failed = false;
@@ -626,7 +653,7 @@ impl TxMode {
             .map(|t| t.elapsed() > control_timeout)
             .unwrap_or(true);
 
-        if cmd.fault_latched || cmd.estop.active() {
+        if cmd.fault_latched() || cmd.estop.active() {
             return Self::SafetyBrake;
         }
         if was_driving && stale {
@@ -925,7 +952,7 @@ mod tx_mode_tests {
         // instead of commanding a safety brake behind their back.
         let mut c = cmd();
         c.estop.set(EstopSource::Driver, true);
-        c.fault_latched = true;
+        c.hazard_latched = true;
         assert_eq!(
             TxMode::evaluate(&c, VehicleMode::Manual, TIMEOUT),
             TxMode::Idle
@@ -957,7 +984,10 @@ mod tx_mode_tests {
     fn safety_brake_when_fault_latched_overrides_driving() {
         let mut c = cmd();
         c.last_control_at = Some(Instant::now());
-        c.fault_latched = true;
+        c.hazard_latched = true;
+        assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::SafetyBrake);
+        c.hazard_latched = false;
+        c.tx_fault_latched = true;
         assert_eq!(TxMode::evaluate(&c, AUTO, TIMEOUT), TxMode::SafetyBrake);
     }
 

@@ -25,6 +25,13 @@ pub struct Params {
     /// Maximum age of a VCU_ADS_VEHICLE frame before status is treated as
     /// stale. Drives diagnostics and engage refusal.
     pub report_timeout_ms: u64,
+    /// How long (ms) the vehicle must sit in `Manual` with no VCU hazard bit
+    /// before the ECU-hazard latch clears on its own. The VCU raises
+    /// `Vcu_Ads_Error_Code_Mtr` / `_Sys` for a frame or a few 1-3 s after the
+    /// driver leaves AUTO (2026-11-09); without the auto-clear that blip
+    /// refused the next AUTO until someone sent MANUAL by hand. The CAN TX
+    /// failure latch is never auto-cleared. 0 disables the auto-clear.
+    pub fault_clear_hold_ms: u64,
     /// Maximum forward speed setpoint allowed (m/s, unsigned magnitude).
     /// Reverse is also capped at the same magnitude. Useful for low-speed
     /// commissioning runs.
@@ -133,6 +140,16 @@ impl Params {
             .default(1000)
             .mandatory()?
             .get();
+
+        let fault_clear_hold_ms: i64 = node
+            .declare_parameter("fault_clear_hold_ms")
+            .default(2000)
+            .mandatory()?
+            .get();
+        ensure!(
+            fault_clear_hold_ms >= 0,
+            "`fault_clear_hold_ms` must be >= 0 (0 disables the auto-clear), got {fault_clear_hold_ms}"
+        );
 
         let max_speed_mps = node
             .declare_parameter("max_speed_mps")
@@ -244,6 +261,7 @@ impl Params {
             control_timeout_ms: control_timeout_ms as u64,
             control_min_rate_hz: control_min_rate_hz as f32,
             report_timeout_ms: report_timeout_ms as u64,
+            fault_clear_hold_ms: fault_clear_hold_ms as u64,
             max_speed_mps: max_speed_mps as f32,
             min_speed_mps: min_speed_mps as f32,
             max_accel_mps2: max_accel_mps2 as f32,

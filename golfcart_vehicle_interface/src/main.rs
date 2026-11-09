@@ -45,6 +45,7 @@ fn main() -> Result<()> {
         gear_config,
         node::steering_sign(&params),
         params.control_min_rate_hz,
+        Duration::from_millis(params.fault_clear_hold_ms),
         Arc::clone(&state),
         Arc::clone(&running),
     ) {

@@ -276,16 +276,18 @@ impl VehicleInterfaceNode {
                         let engaged = mode_request_acknowledged(
                             true,
                             vehicle_mode,
-                            cmd.fault_latched,
+                            cmd.fault_latched(),
                         );
                         if !engaged {
                             log_info!(
                                 NODE_NAME,
                                 "ControlMode AUTONOMOUS not acknowledged: vehicle_mode={:?} \
-                                 fault_latched={} — mode changes are made by the driver on \
-                                 the vehicle, not over this service",
+                                 fault_latched={} (ecu_hazard={} tx_fault={}) — mode changes \
+                                 are made by the driver on the vehicle, not over this service",
                                 vehicle_mode,
-                                cmd.fault_latched
+                                cmd.fault_latched(),
+                                cmd.hazard_latched,
+                                cmd.tx_fault_latched
                             );
                         }
                         return ControlModeCommand_Response { success: engaged };
@@ -296,7 +298,7 @@ impl VehicleInterfaceNode {
                     // back, and drop any held setpoints. Neither switches the
                     // vehicle: it stays in AUTO until the driver presses the
                     // dashboard button, and the reply says which it is.
-                    cmd.fault_latched = false;
+                    cmd.clear_fault_latches();
                     cmd.target_speed_mps = 0.0;
                     cmd.target_acceleration_mps2 = 0.0;
                     cmd.target_tire_angle_rad = 0.0;
@@ -586,7 +588,7 @@ fn publish_status(
     // anything else (mixed, Invalid, or a stale frame) → NOT_READY. A latched
     // fault still overrides to DISENGAGED: we refuse to command in that state,
     // so reporting AUTONOMOUS would lie to Autoware even if the VCU is willing.
-    let mode = if cmd.fault_latched {
+    let mode = if cmd.fault_latched() {
         ControlModeReport::DISENGAGED
     } else {
         match status.vehicle_mode(report_timeout) {
@@ -907,7 +909,7 @@ fn publish_diagnostics(
     // Top-level rollup with operational context the monitor can show. Stale
     // VCU report counts as a fault — Autoware should not assume operational
     // ECU state from a frozen snapshot.
-    let overall_faulted = cmd.fault_latched
+    let overall_faulted = cmd.fault_latched()
         || cmd.estop.active()
         || veh_stale
         || veh_fresh
@@ -926,8 +928,12 @@ fn publish_diagnostics(
             DiagnosticStatus::OK
         },
         name: "vehicle_interface".to_string(),
-        message: if cmd.fault_latched {
-            "fault latched; engage will be refused until MANUAL/NO_COMMAND request"
+        message: if cmd.tx_fault_latched {
+            "CAN TX fault latched; engage will be refused until MANUAL/NO_COMMAND request"
+                .to_string()
+        } else if cmd.hazard_latched {
+            "ECU hazard latched; engage refused until MANUAL/NO_COMMAND request \
+             or the vehicle sits in Manual with no hazard"
                 .to_string()
         } else if overall_faulted {
             "active fault".to_string()
@@ -956,7 +962,9 @@ fn publish_diagnostics(
                     )
                 },
             ),
-            kv("fault_latched", cmd.fault_latched.to_string()),
+            kv("fault_latched", cmd.fault_latched().to_string()),
+            kv("ecu_hazard_latched", cmd.hazard_latched.to_string()),
+            kv("tx_fault_latched", cmd.tx_fault_latched.to_string()),
             kv("driver_estop", cmd.estop.driver().to_string()),
             kv("mrm_estop", cmd.estop.mrm().to_string()),
             kv(
@@ -1055,6 +1063,37 @@ mod mode_request_tests {
     #[test]
     fn autonomous_refused_with_a_fault_latched() {
         assert!(!mode_request_acknowledged(true, VehicleMode::Autonomous, true));
+    }
+
+    #[test]
+    fn autonomous_acknowledged_after_the_hazard_latch_auto_clears() {
+        // 2026-11-09: err_mtr blip after leaving AUTO; the next dashboard AUTO
+        // was refused until MANUAL was sent by hand.
+        use crate::state::CommandState;
+        use std::time::{Duration, Instant};
+        let hold = Duration::from_millis(2000);
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        c.update_hazard_latch(true, VehicleMode::Manual, t0, hold);
+        assert!(!mode_request_acknowledged(true, VehicleMode::Autonomous, c.fault_latched()));
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + hold, hold);
+        // Driver presses AUTO; the first frame in Autonomous is clean.
+        c.update_hazard_latch(false, VehicleMode::Autonomous, t0 + hold * 3, hold);
+        assert!(mode_request_acknowledged(true, VehicleMode::Autonomous, c.fault_latched()));
+    }
+
+    #[test]
+    fn autonomous_still_refused_with_the_tx_latch_after_a_hazard_clear() {
+        use crate::state::CommandState;
+        use std::time::{Duration, Instant};
+        let hold = Duration::from_millis(2000);
+        let mut c = CommandState::default();
+        c.tx_fault_latched = true;
+        let t0 = Instant::now();
+        c.update_hazard_latch(true, VehicleMode::Manual, t0, hold);
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + hold, hold);
+        assert!(!c.hazard_latched);
+        assert!(!mode_request_acknowledged(true, VehicleMode::Autonomous, c.fault_latched()));
     }
 
     #[test]

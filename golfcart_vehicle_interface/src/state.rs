@@ -105,10 +105,19 @@ pub struct CommandState {
     pub estop: EstopState,
     /// Sticky latch raised when the ECU reports any hazard
     /// (`Vcu_Ads_Estop` or any of the four `Vcu_Ads_Error_Code_*` bits).
-    /// While set, the TX loop commands a safety brake (as long as the vehicle
-    /// is in `Autonomous`) and the control-mode report reads `DISENGAGED`,
-    /// until the user sends a MANUAL/NO_COMMAND request to clear it.
-    pub fault_latched: bool,
+    /// While set (or while `tx_fault_latched` is), the TX loop commands a
+    /// safety brake (as long as the vehicle is in `Autonomous`) and the
+    /// control-mode report reads `DISENGAGED`. Cleared by a MANUAL/NO_COMMAND
+    /// request, or on its own once the vehicle has been in `Manual` with no
+    /// hazard bit for `fault_clear_hold_ms` (see `update_hazard_latch`).
+    pub hazard_latched: bool,
+    /// Last time a VCU_ADS_VEHICLE frame carried a hazard bit. The auto-clear
+    /// hold is measured from here, so a hazard still asserted keeps it latched.
+    pub last_hazard_at: Option<Instant>,
+    /// Sticky latch raised by persistent CAN TX failure (`TX_FAIL_THRESHOLD`
+    /// consecutive failed ticks). Same effect as `hazard_latched`, but never
+    /// cleared automatically: only a MANUAL/NO_COMMAND request clears it.
+    pub tx_fault_latched: bool,
     /// Last time a Control message was received. Commands are only sent while
     /// recent — protects the vehicle from a stalled planner.
     pub last_control_at: Option<Instant>,
@@ -136,6 +145,75 @@ pub struct CommandState {
     pub tx_failed: bool,
 }
 
+/// What `CommandState::update_hazard_latch` did, so the caller logs edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HazardLatchEvent {
+    /// Nothing changed.
+    Unchanged,
+    /// A hazard bit raised the latch (rising edge only).
+    Latched,
+    /// The latch cleared itself: vehicle in Manual, no hazard for the hold.
+    AutoCleared,
+}
+
+impl CommandState {
+    /// Either latch is set: the TX loop safety-brakes in Autonomous, the
+    /// control-mode report reads DISENGAGED and AUTONOMOUS is refused.
+    pub fn fault_latched(&self) -> bool {
+        self.hazard_latched || self.tx_fault_latched
+    }
+
+    /// Clear both latches — a MANUAL/NO_COMMAND request.
+    pub fn clear_fault_latches(&mut self) {
+        self.hazard_latched = false;
+        self.tx_fault_latched = false;
+    }
+
+    /// Feed one VCU_ADS_VEHICLE frame's hazard summary into the ECU-hazard
+    /// latch.
+    ///
+    /// A hazard bit latches at once. The latch clears itself only when the
+    /// vehicle is in `Manual` (all four subsystems, fresh frames) and no
+    /// hazard bit has been seen for `clear_hold`. On 2026-11-09 the VCU set
+    /// `Vcu_Ads_Error_Code_Mtr` for a frame or a few 1-3 s after every
+    /// dashboard AUTO -> Manual, and the latch then refused the next AUTO
+    /// until someone sent MANUAL by hand. In Manual we command nothing, so
+    /// the latch protects nothing there; entering AUTO is the driver's own
+    /// act, and a hazard still present then re-latches on the next frame.
+    /// `Autonomous` and `Abnormal` never clear. A zero `clear_hold`
+    /// disables the auto-clear. `tx_fault_latched` is not touched.
+    pub fn update_hazard_latch(
+        &mut self,
+        hazard: bool,
+        vehicle_mode: VehicleMode,
+        now: Instant,
+        clear_hold: Duration,
+    ) -> HazardLatchEvent {
+        if hazard {
+            self.last_hazard_at = Some(now);
+            if self.hazard_latched {
+                return HazardLatchEvent::Unchanged;
+            }
+            self.hazard_latched = true;
+            return HazardLatchEvent::Latched;
+        }
+        if !self.hazard_latched
+            || clear_hold.is_zero()
+            || vehicle_mode != VehicleMode::Manual
+        {
+            return HazardLatchEvent::Unchanged;
+        }
+        let quiet = self
+            .last_hazard_at
+            .map_or(true, |t| now.saturating_duration_since(t) >= clear_hold);
+        if !quiet {
+            return HazardLatchEvent::Unchanged;
+        }
+        self.hazard_latched = false;
+        HazardLatchEvent::AutoCleared
+    }
+}
+
 impl Default for CommandState {
     fn default() -> Self {
         Self {
@@ -151,7 +229,9 @@ impl Default for CommandState {
             blinker: BlinkerCtrl::Off,
             headlight: false,
             estop: EstopState::default(),
-            fault_latched: false,
+            hazard_latched: false,
+            last_hazard_at: None,
+            tx_fault_latched: false,
             last_control_at: None,
             control_freq: FreqWindow::default(),
             last_gear_sent: Gear::Parking,
@@ -445,5 +525,134 @@ mod estop_tests {
         // not a release and must not be logged as one.
         assert_eq!(e.set(EstopSource::Mrm, false), None);
         assert_eq!(e.set(EstopSource::Driver, false), Some(false));
+    }
+}
+
+#[cfg(test)]
+mod hazard_latch_tests {
+    //! The 2026-11-09 failure: an err_mtr blip 1-3 s after leaving AUTO left
+    //! the latch set, and the next dashboard AUTO was refused.
+
+    use super::{CommandState, HazardLatchEvent, VehicleMode};
+    use std::time::{Duration, Instant};
+
+    const HOLD: Duration = Duration::from_millis(2000);
+    #[allow(non_snake_case)]
+    fn MS(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn blip_after_leaving_auto_clears_after_the_hold_in_manual() {
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        // Driver left AUTO; 2.7 s later one frame carries err_mtr.
+        assert_eq!(
+            c.update_hazard_latch(true, VehicleMode::Manual, t0, HOLD),
+            HazardLatchEvent::Latched
+        );
+        assert!(c.fault_latched());
+        // Quiet frames in Manual, short of the hold: still latched.
+        assert_eq!(
+            c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(1990), HOLD),
+            HazardLatchEvent::Unchanged
+        );
+        assert!(c.fault_latched());
+        // Hold elapsed.
+        assert_eq!(
+            c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(2000), HOLD),
+            HazardLatchEvent::AutoCleared
+        );
+        assert!(!c.fault_latched());
+        // Logged once: the next frame is not another clear.
+        assert_eq!(
+            c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(2020), HOLD),
+            HazardLatchEvent::Unchanged
+        );
+    }
+
+    #[test]
+    fn hazard_still_asserted_in_manual_stays_latched() {
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        for i in 0..300 {
+            c.update_hazard_latch(true, VehicleMode::Manual, t0 + MS(20 * i), HOLD);
+        }
+        assert!(c.hazard_latched);
+        // One quiet frame right after a long assertion does not clear it.
+        assert_eq!(
+            c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(6000), HOLD),
+            HazardLatchEvent::Unchanged
+        );
+        assert!(c.hazard_latched);
+    }
+
+    #[test]
+    fn hazard_resets_the_hold() {
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        c.update_hazard_latch(true, VehicleMode::Manual, t0, HOLD);
+        c.update_hazard_latch(true, VehicleMode::Manual, t0 + MS(1500), HOLD);
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(2500), HOLD);
+        assert!(c.hazard_latched, "hold runs from the last hazard frame");
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(3500), HOLD);
+        assert!(!c.hazard_latched);
+    }
+
+    #[test]
+    fn autonomous_never_auto_clears() {
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        c.update_hazard_latch(true, VehicleMode::Autonomous, t0, HOLD);
+        for mode in [VehicleMode::Autonomous, VehicleMode::Abnormal] {
+            assert_eq!(
+                c.update_hazard_latch(false, mode, t0 + Duration::from_secs(60), HOLD),
+                HazardLatchEvent::Unchanged
+            );
+            assert!(c.fault_latched(), "{mode:?} must not clear the latch");
+        }
+    }
+
+    #[test]
+    fn tx_failure_latch_is_not_auto_cleared() {
+        let mut c = CommandState::default();
+        c.tx_fault_latched = true;
+        let t0 = Instant::now();
+        c.update_hazard_latch(false, VehicleMode::Manual, t0, HOLD);
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + Duration::from_secs(60), HOLD);
+        assert!(c.fault_latched());
+        // A hazard latch cleared beside it leaves the TX latch standing.
+        c.update_hazard_latch(true, VehicleMode::Manual, t0, HOLD);
+        assert_eq!(
+            c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(2000), HOLD),
+            HazardLatchEvent::AutoCleared
+        );
+        assert!(c.tx_fault_latched && c.fault_latched());
+        // Only the explicit MANUAL/NO_COMMAND clear removes it.
+        c.clear_fault_latches();
+        assert!(!c.fault_latched());
+    }
+
+    #[test]
+    fn zero_hold_disables_the_auto_clear() {
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        c.update_hazard_latch(true, VehicleMode::Manual, t0, Duration::ZERO);
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + Duration::from_secs(60), Duration::ZERO);
+        assert!(c.hazard_latched);
+    }
+
+    #[test]
+    fn hazard_on_entering_auto_relatches() {
+        let mut c = CommandState::default();
+        let t0 = Instant::now();
+        c.update_hazard_latch(true, VehicleMode::Manual, t0, HOLD);
+        c.update_hazard_latch(false, VehicleMode::Manual, t0 + MS(2000), HOLD);
+        assert!(!c.fault_latched());
+        assert_eq!(
+            c.update_hazard_latch(true, VehicleMode::Autonomous, t0 + MS(5000), HOLD),
+            HazardLatchEvent::Latched
+        );
+        assert!(c.fault_latched());
     }
 }
