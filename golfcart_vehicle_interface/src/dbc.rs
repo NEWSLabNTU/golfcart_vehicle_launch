@@ -26,49 +26,31 @@ pub use messages::{
     VcuAdsVehicle,
 };
 
-/// `Vcu_Ads_Vehicle_Speed` is in km/h, whatever the DBC's "m/s" unit says
-/// (confirmed on the cart 2026-10-28: the drive log stepped 0, 0.999, 1.999, ...
-/// 5.000, whole units each 0.001 short, which is integer km/h). Every consumer
-/// of the VCU speed goes through [`vcu_speed_mps`] so no site can forget it.
-pub const VCU_SPEED_KMH_TO_MPS: f64 = 1.0 / 3.6;
-
-/// The VCU floors its speed to whole km/h and sends each one 0.001 short
-/// (0.999, 1.999, ...). A reading of k km/h therefore means a true speed in
-/// [k, k + 1), mean k + 0.5: against NDT on 2026-10-28 the floored report read
-/// 0.42 m/s in Drive and 0.28 m/s in Reverse where NDT measured 0.52 and 0.42,
-/// and adding 0.5 km/h (0.14 m/s) lands both within 0.04 m/s. Without it the
-/// EKF prediction ran slow and trailed NDT by about 0.2 m while moving.
+/// `Vcu_Ads_Vehicle_Speed` and `Ads_Vcu_Target_Speed` are in m/s, as the DBC
+/// says, since the vendor's VCU update of early November 2026.
 ///
-/// Applied only to a reading that sits on a whole number (within 0.002), so it
-/// switches itself off if the vendor ever sends finer steps. Zero stays zero: it
-/// means anything under 1 km/h, which has no useful midpoint.
-pub fn midpoint_of_floored_kmh(kmh: f64) -> f64 {
-    let mag = kmh.abs();
-    let whole = mag.round();
-    if whole >= 1.0 && (mag - whole).abs() <= 0.002 {
-        kmh.signum() * (whole + 0.5)
-    } else {
-        kmh
-    }
-}
-
-/// The speed *setpoint* is in km/h too, whatever `Ads_Vcu_Target_Speed`'s "m/s"
-/// label says. On 2026-10-28 the cart sat at 0 km/h for targets of 0.25 to 1.25
-/// and began to creep, reading 0.999 km/h, only once 1.5 had been held for about
-/// 3 s: a km/h number sent in what we thought was m/s. Everything we send goes
-/// through [`vcu_target_speed_raw`], as everything we read goes through
-/// [`vcu_speed_mps`].
-pub const VCU_SPEED_MPS_TO_KMH: f64 = 3.6;
+/// Before it both were km/h whatever the DBC's label (2026-10-28: the report
+/// stepped 0, 0.999, 1.999, ... floored whole km/h; the cart crept only once
+/// 1.5 m/s had gone out as 5.4). On 2026-11-09 the report read 0.01 ... 0.37 in
+/// fine steps, and against NDT on the same creep (session
+/// 20261109_220723_vcu-right-turn) our km/h reading came out 3.5-3.8x low:
+/// 0.45 m of reported travel where NDT measured 1.83 m. So the report is m/s
+/// now; the setpoint is assumed to have moved with it (not yet seen in AUTO).
+/// If that assumption is wrong the cart runs 3.6x SLOWER than asked, not faster.
+///
+/// Every speed read and written goes through [`vcu_speed_mps`] and
+/// [`vcu_target_speed_raw`], so a further unit change is one edit here.
+pub const VCU_SPEED_UNIT_TO_MPS: f64 = 1.0;
 
 /// Planner speed in m/s as the number the VCU wants in `Ads_Vcu_Target_Speed`.
 pub fn vcu_target_speed_raw(speed_mps: f32) -> f32 {
-    (speed_mps as f64 * VCU_SPEED_MPS_TO_KMH) as f32
+    (speed_mps as f64 / VCU_SPEED_UNIT_TO_MPS) as f32
 }
 
 /// The VCU speed report in m/s, unsigned: the sign comes from the gear.
 #[allow(dead_code)]
 pub fn vcu_speed_mps(m: &VcuAdsMtr) -> f32 {
-    (midpoint_of_floored_kmh(m.vcu_ads_vehicle_speed() as f64) * VCU_SPEED_KMH_TO_MPS) as f32
+    (m.vcu_ads_vehicle_speed() as f64 * VCU_SPEED_UNIT_TO_MPS) as f32
 }
 
 // ============================================================================
@@ -270,35 +252,22 @@ mod tests {
     }
 
     #[test]
-    fn vcu_speed_is_kmh_converted_to_mps() {
-        // The cart's dashboard showed 5 km/h when the report read 5.000; the
-        // floored reading stands for [5, 6) km/h, so the report is 5.5 km/h.
-        let mtr = VcuAdsMtr::new(2, 0, Gear::Drive.to_raw(), 5.0).unwrap();
+    fn vcu_speed_report_is_mps() {
+        // 2026-11-09 creep: the report read 0.37 where NDT measured 0.365 m/s.
+        let mtr = VcuAdsMtr::new(2, 0, Gear::Drive.to_raw(), 0.37).unwrap();
         let parsed = VcuAdsMtr::try_from(mtr.raw().as_slice()).unwrap();
-        assert!((vcu_speed_mps(&parsed) - 5.5 / 3.6).abs() < 0.005);
-        assert!((vcu_speed_mps(&parsed) - 1.528).abs() < 0.005);
+        assert!((vcu_speed_mps(&parsed) - 0.37).abs() < 0.005);
+        // Whole numbers get no correction any more: the report is not floored.
+        let mtr = VcuAdsMtr::new(2, 0, Gear::Drive.to_raw(), 2.0).unwrap();
+        let parsed = VcuAdsMtr::try_from(mtr.raw().as_slice()).unwrap();
+        assert!((vcu_speed_mps(&parsed) - 2.0).abs() < 0.005);
     }
 
     #[test]
-    fn the_setpoint_goes_out_in_kmh() {
-        assert!((vcu_target_speed_raw(0.75) - 2.7).abs() < 1e-5);
-        assert!((vcu_target_speed_raw(1.5) - 5.4).abs() < 1e-5);
+    fn the_setpoint_goes_out_in_mps() {
+        assert!((vcu_target_speed_raw(0.75) - 0.75).abs() < 1e-6);
+        assert!((vcu_target_speed_raw(1.5) - 1.5).abs() < 1e-6);
         assert_eq!(vcu_target_speed_raw(0.0), 0.0);
-    }
-
-    #[test]
-    fn floored_reading_gets_half_a_step_back() {
-        // The 2026-10-28 drive log values: 0.999 and 1.999 are 1 and 2 km/h floored.
-        assert!((midpoint_of_floored_kmh(0.999) - 1.5).abs() < 1e-9);
-        assert!((midpoint_of_floored_kmh(1.999) - 2.5).abs() < 1e-9);
-        assert!((midpoint_of_floored_kmh(-1.999) + 2.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn zero_and_finer_readings_are_left_alone() {
-        assert_eq!(midpoint_of_floored_kmh(0.0), 0.0);
-        assert_eq!(midpoint_of_floored_kmh(0.4), 0.4); // under 1 km/h: no midpoint
-        assert_eq!(midpoint_of_floored_kmh(2.37), 2.37); // not a whole step: the vendor sends finer values
     }
 
     #[test]

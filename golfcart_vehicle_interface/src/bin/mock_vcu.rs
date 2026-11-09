@@ -238,8 +238,8 @@ fn rx_loop(socket: CanSocket, world: Arc<Mutex<World>>, running: Arc<AtomicBool>
             Messages::AdsVcuMtr(m) => {
                 let mut w = world.lock();
                 w.motor_en = m.ads_vcu_motor_en().into();
-                // The wire value is km/h, as in the real VCU.
-            w.target_speed_mps = m.ads_vcu_target_speed() / 3.6;
+                // The wire value is m/s, as in the real VCU since its November 2026 update.
+                w.target_speed_mps = m.ads_vcu_target_speed();
                 w.target_gear = m.ads_vcu_target_gear_raw();
             }
             Messages::AdsVcuEps(m) => {
@@ -333,9 +333,9 @@ fn main() -> Result<()> {
             let gear_raw = snapshot.target_gear;
             let throttle_pct: u8 = ((snapshot.speed_mps.abs() / 5.0) * 100.0)
                 .clamp(0.0, 255.0) as u8;
-            // The real VCU reports km/h in this field (see dbc::VCU_SPEED_KMH_TO_MPS),
+            // The real VCU reports m/s in this field (see dbc::VCU_SPEED_UNIT_TO_MPS),
             // unsigned: direction comes from the gear.
-            let mtr = VcuAdsMtr::new(driving_state, throttle_pct, gear_raw, snapshot.speed_mps.abs() * 3.6)
+            let mtr = VcuAdsMtr::new(driving_state, throttle_pct, gear_raw, snapshot.speed_mps.abs())
                 .expect("MTR fields in range");
             let _ = send_frame(&tx_socket, VcuAdsMtr::MESSAGE_ID, mtr.raw());
         }
