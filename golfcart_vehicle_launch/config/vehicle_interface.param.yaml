@@ -39,12 +39,14 @@
     # min(max_speed_mps, 6.944), the ROOTS 25 km/h limit.
     max_speed_mps: 2.5
     # Floor for any nonzero speed setpoint (m/s; 0 disables, never above
-    # max_speed_mps). 1.5 m/s is 5.4 km/h: the cart stalls on a bump at a crawl, so
-    # a planner request below this is raised to it. A setpoint of zero is left
-    # alone, so stopping is unaffected. The planner's range is therefore 1.5 to
-    # max_speed_mps; a request below the floor, such as a 5.4 km/h lane or the
-    # tail of a deceleration, runs at the floor.
-    min_speed_mps: 1.5
+    # max_speed_mps). A planner request below it is raised to it; a setpoint of
+    # zero is left alone, so stopping is unaffected. 0.8 m/s (2.9 km/h) since
+    # 2026-11-10, so the Ming-Da loop's 3 km/h north lane (0.83 m/s) is sent as
+    # asked. It was 1.5 (5.4 km/h), set when the cart stalled on a bump at a
+    # crawl; that was with the setpoint read as km/h, and the low end has not
+    # been driven since the m/s update. If the cart stalls at 3 km/h, raise it
+    # back towards 1.5 and the slow lanes run at the floor.
+    min_speed_mps: 0.8
     # Commanded decelerations below this (m/s^2) are sent as none. Any
     # Target_Deceleration > 0 makes the VCU cut motor torque, yet ROOTS does
     # not brake below 1.2 m/s^2, so Autoware's PID dithering around zero at
